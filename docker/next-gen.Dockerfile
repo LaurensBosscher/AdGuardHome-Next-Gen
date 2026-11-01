@@ -13,6 +13,8 @@ ARG NODE_VERSION=24
 
 FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm AS js-builder
 WORKDIR /src
+# Twosky JSON lives at the repo root and is aliased as the `Twosky` module.
+COPY .twosky.json ./
 COPY client_v2/package.json client_v2/package-lock.json ./client_v2/
 RUN --mount=type=cache,target=/root/.npm \
 	npm --prefix client_v2 ci

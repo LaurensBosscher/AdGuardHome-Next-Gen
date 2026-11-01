@@ -36,9 +36,8 @@ COPY . .
 COPY --from=js-builder /src/build ./build
 RUN --mount=type=cache,target=/go/pkg/mod \
 	--mount=type=cache,target=/root/.cache/go-build \
-	set -euo pipefail; \
+	bash -eu -c '\
 	mkdir -p /out; \
-	# Prefer explicit SOURCE_DATE_EPOCH from CI; fall back to now if unset/0.
 	if [ "${SOURCE_DATE_EPOCH}" = "0" ] || [ -z "${SOURCE_DATE_EPOCH}" ]; then \
 		SOURCE_DATE_EPOCH="$(date -u +%s)"; \
 	fi; \
@@ -48,7 +47,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 		SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
 		OUT=/out/AdGuardHome \
 		sh ./scripts/make/go-build.sh; \
-	chmod +x /out/AdGuardHome
+	chmod +x /out/AdGuardHome'
+
 
 FROM alpine:3.23 AS runtime
 ARG BUILD_DATE=unknown

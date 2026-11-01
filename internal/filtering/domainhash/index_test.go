@@ -106,7 +106,7 @@ func TestIndexContainsHash(t *testing.T) {
 
 	// The hash is masked before the lookup, so a hash with extra high bits
 	// set matches as well.
-	assert.True(t, idx.ContainsHash(h|^(truncMask(hashBytes))), "masked hash")
+	assert.True(t, idx.ContainsHash(h|^truncMask(hashBytes)), "masked hash")
 
 	// A hash that is not in the file does not match.  With 40 bits of hash
 	// space and only two entries in the file, the chance of the hash of

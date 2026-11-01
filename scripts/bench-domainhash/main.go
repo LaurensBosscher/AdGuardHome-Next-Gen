@@ -62,7 +62,7 @@ func main() {
 		heapBase := heapAlloc()
 
 		t0 := time.Now()
-		eng, store := mustURLFilter(n)
+		ufEng, ufStore := mustURLFilter(n)
 		buildUF := time.Since(t0)
 		forceGC()
 		rssUF := vmRSS()
@@ -76,9 +76,9 @@ func main() {
 			fmtBytes(diff(heapUF, heapBase)),
 		)
 
-		_ = store.Close()
-		eng = nil
-		store = nil
+		// Drop the probe engine; a fresh one is rebuilt below for lookups.
+		_ = ufStore.Close()
+		_, _ = ufEng, ufStore
 		forceGC()
 		debugFreeOSMemory()
 
@@ -108,7 +108,7 @@ func main() {
 		)
 
 		// Rebuild urlfilter for the lookup section so both stay available.
-		eng, store = mustURLFilter(n)
+		eng, store := mustURLFilter(n)
 		prepared = append(prepared, ready{n: n, eng: eng, store: store, idx: idx})
 	}
 
@@ -254,8 +254,8 @@ func vmRSS() (bytes uint64) {
 		if len(fields) < 2 {
 			return 0
 		}
-		kb, err := strconv.ParseUint(fields[1], 10, 64)
-		if err != nil {
+		kb, parseErr := strconv.ParseUint(fields[1], 10, 64)
+		if parseErr != nil {
 			return 0
 		}
 

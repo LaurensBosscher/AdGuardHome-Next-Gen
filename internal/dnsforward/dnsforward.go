@@ -152,6 +152,9 @@ type Server struct {
 	// dnsProxy is the DNS proxy for forwarding client's DNS requests.
 	dnsProxy *proxy.Proxy
 
+	// cachePersist owns the optional background DNS cache dump loop.
+	cachePersist *cachePersistCtrl
+
 	// internalProxy resolves internal requests from the application itself.  It
 	// isn't started and so no listen ports are required.
 	internalProxy *proxy.Proxy
@@ -344,6 +347,8 @@ func (s *Server) WriteDiskConfig(dc *configmgr.DNSConfig) {
 	dc.BootstrapPreferIPv6 = sc.BootstrapPreferIPv6
 	dc.CacheEnabled = sc.CacheEnabled
 	dc.CacheOptimistic = sc.CacheOptimistic
+	dc.CachePersistEnabled = sc.CachePersistEnabled
+	dc.CachePersistInterval = sc.CachePersistInterval
 	dc.EnableDNSSEC = sc.EnableDNSSEC
 	dc.HandleDDR = sc.HandleDDR
 	dc.RefuseAny = sc.RefuseAny
@@ -498,6 +503,7 @@ func (s *Server) startLocked(ctx context.Context) error {
 	err := s.dnsProxy.Start(ctx)
 	if err == nil {
 		s.isRunning = true
+		s.startCachePersistLocked(ctx)
 	}
 
 	return err
@@ -815,6 +821,8 @@ func (s *Server) stopLocked(ctx context.Context) {
 	// TODO(e.burkov, a.garipov):  Return critical errors, not just log them.
 	// This will require filtering all the non-critical errors in
 	// [upstream.Upstream] implementations.
+
+	s.stopCachePersistLocked(ctx)
 
 	if s.dnsProxy != nil {
 		err := s.dnsProxy.Shutdown(ctx)

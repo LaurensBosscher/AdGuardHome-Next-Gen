@@ -642,6 +642,7 @@ func (web *webAPI) startMods(ctx context.Context) (err error) {
 		web.httpReg,
 		statsDir,
 		querylogDir,
+		filepath.Join(web.conf.workDir, dataDir),
 		web.hostsContainer,
 	)
 	if err != nil {

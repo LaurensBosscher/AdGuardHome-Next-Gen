@@ -195,3 +195,21 @@ filtering:
   domain_hash_enabled: true
   domain_hash_bytes: 5  # 40-bit; use 8 for stricter TI collision policy
 ```
+
+
+## DNS cache persistence
+
+Set in `AdGuardHome.yaml`:
+
+```yaml
+dns:
+  cache_enabled: true
+  cache_persist_enabled: true
+  # optional; default 5m
+  # cache_persist_interval: 5m
+```
+
+The live dnsproxy cache is periodically dumped to `data/dns_cache.bin` and
+reloaded on start.  Expired entries are skipped on load.  Uses reflect into
+dnsproxy internals (same constraint as upstream cache-stats work) because
+dnsproxy exposes no public dump/load API yet.

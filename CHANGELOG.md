@@ -18,6 +18,13 @@ See also the [v0.107.80 GitHub milestone][ms-v0.107.80].
 NOTE: Add new changes BELOW THIS COMMENT.
 -->
 
+### Changed
+
+- The dashboard no longer shows zero-valued statistics for disabled Safe
+  Browsing, Parental Control, and Safe Search features (ported from upstream
+  [#8538](https://github.com/AdguardTeam/AdGuardHome/pull/8538) / [#689]).
+
+
 ### Security
 
 - Go version has been updated to prevent the possibility of exploiting the Go vulnerabilities fixed in [1.27.3][go-1.27.3].

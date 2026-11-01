@@ -18,6 +18,12 @@ See also the [v0.107.80 GitHub milestone][ms-v0.107.80].
 NOTE: Add new changes BELOW THIS COMMENT.
 -->
 
+### Added
+
+- DNS cache statistics on the dashboard (ported from upstream
+  [#8642](https://github.com/AdguardTeam/AdGuardHome/pull/8642) / [#1453], [#8128]).
+
+
 ### Security
 
 - Go version has been updated to prevent the possibility of exploiting the Go vulnerabilities fixed in [1.27.3][go-1.27.3].

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"container/heap"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net/netip"
@@ -12,6 +11,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/AdguardTeam/golibs/errors"
 )
 
 const (

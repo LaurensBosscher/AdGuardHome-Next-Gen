@@ -1,0 +1,104 @@
+# Build and publish multi-arch (linux/amd64 + linux/arm64) Next-Gen images
+# to GHCR for easy testing and OpenStick/router deploys.
+name: Next-Gen Docker
+
+on:
+  push:
+    branches:
+      - master
+      - main
+      - 'next-gen/**'
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  GO_VERSION: '1.27.3'
+  NODE_VERSION: '24'
+
+jobs:
+  docker:
+    name: Build linux/amd64 + linux/arm64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set image metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GHCR requires lowercase repository names.
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          IMAGE_NAME="ghcr.io/${owner}/adguardhome-next-gen"
+          short="$(git rev-parse --short HEAD)"
+          version="v1.0.0-b.1-nextgen-${short}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          fi
+          build_date="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          source_date_epoch="$(git log -1 --format=%ct)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "build_date=${build_date}" >> "${GITHUB_OUTPUT}"
+          echo "source_date_epoch=${source_date_epoch}" >> "${GITHUB_OUTPUT}"
+          echo "vcs_ref=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+
+          # Tags: sha always; branch slug on push; latest on default branch; version on tag.
+          tags="${IMAGE_NAME}:sha-${short}"
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+              tags+=",${IMAGE_NAME}:${GITHUB_REF_NAME}"
+            else
+              branch="${GITHUB_REF_NAME//\//-}"
+              tags+=",${IMAGE_NAME}:${branch}"
+              if [[ "${GITHUB_REF_NAME}" == "master" || "${GITHUB_REF_NAME}" == "main" ]]; then
+                tags+=",${IMAGE_NAME}:latest"
+              fi
+            fi
+          fi
+          echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
+          echo "push=$([[ "${GITHUB_EVENT_NAME}" == "pull_request" ]] && echo false || echo true)" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (and push on non-PR)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/next-gen.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.meta.outputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            GO_VERSION=${{ env.GO_VERSION }}
+            NODE_VERSION=${{ env.NODE_VERSION }}
+            VERSION=${{ steps.meta.outputs.version }}
+            CHANNEL=development
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+            SOURCE_DATE_EPOCH=${{ steps.meta.outputs.source_date_epoch }}
+            VCS_REF=${{ steps.meta.outputs.vcs_ref }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false

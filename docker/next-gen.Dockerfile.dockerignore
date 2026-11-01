@@ -1,0 +1,15 @@
+**/.git
+**/.github
+**/node_modules
+**/dist
+**/tmp
+client
+snap
+scripts/snap
+bin
+*.exe
+*.test
+coverage.*
+docs
+*.png
+*.gif

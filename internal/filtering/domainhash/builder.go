@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"container/heap"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net/netip"
@@ -12,6 +11,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/AdguardTeam/golibs/errors"
 )
 
 const (
@@ -57,14 +58,14 @@ const (
 var (
 	// ErrBadConfig is returned by [NewBuilder] when the configuration is
 	// invalid.
-	ErrBadConfig = errors.New("bad domain hash config")
+	ErrBadConfig = errors.Error("bad domain hash config")
 
 	// ErrBuilderClosed is returned by the methods of a [Builder] after it has
 	// been closed.
-	ErrBuilderClosed = errors.New("domain hash builder is closed")
+	ErrBuilderClosed = errors.Error("domain hash builder is closed")
 
 	// errBadRunFile is returned when an intermediate run file is malformed.
-	errBadRunFile = errors.New("malformed run file")
+	errBadRunFile = errors.Error("malformed run file")
 )
 
 // DomainHashConfig is the configuration of the domain-hash blocklist.

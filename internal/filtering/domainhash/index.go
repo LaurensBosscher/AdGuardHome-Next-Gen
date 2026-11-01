@@ -1,14 +1,15 @@
 package domainhash
 
 import (
-	"errors"
 	"fmt"
 	"os"
+
+	"github.com/AdguardTeam/golibs/errors"
 )
 
 // ErrBadIndexSize is returned by [Open] when the size of the blocklist file is
 // not a multiple of the hash size.
-var ErrBadIndexSize = errors.New("blocklist file size is not a multiple of the hash size")
+var ErrBadIndexSize = errors.Error("blocklist file size is not a multiple of the hash size")
 
 // noUnmap is the unmap function used when the blocklist file is not mapped.
 func noUnmap() (err error) {

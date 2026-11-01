@@ -8,7 +8,7 @@
 #     --build-arg VERSION=dev --build-arg CHANNEL=development \
 #     -t adguardhome-next-gen:local --load .
 
-ARG GO_VERSION=1.27.1
+ARG GO_VERSION=1.27.3
 ARG NODE_VERSION=24
 
 FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm AS js-builder

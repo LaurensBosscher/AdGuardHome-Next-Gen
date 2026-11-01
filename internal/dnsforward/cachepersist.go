@@ -273,17 +273,19 @@ func loadProxyDNSCache(path string, p *proxy.Proxy) (n int, err error) {
 			return 0, fmt.Errorf("reading section count: %w", err)
 		}
 
-		c, err := proxyCacheByKind(p, kind)
+		var c glcache.Cache
+		c, err = proxyCacheByKind(p, kind)
 		if err != nil {
 			return 0, err
 		}
 
 		for j := uint32(0); j < count; j++ {
-			key, err := readBytes(f)
+			var key, val []byte
+			key, err = readBytes(f)
 			if err != nil {
 				return 0, fmt.Errorf("reading key: %w", err)
 			}
-			val, err := readBytes(f)
+			val, err = readBytes(f)
 			if err != nil {
 				return 0, fmt.Errorf("reading value: %w", err)
 			}

@@ -3,8 +3,9 @@
 package domainhash
 
 import (
-	"errors"
 	"os"
+
+	"github.com/AdguardTeam/golibs/errors"
 )
 
 // errMmapUnsupported is returned by mapFile on platforms without support for

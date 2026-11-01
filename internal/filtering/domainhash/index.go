@@ -1,9 +1,10 @@
 package domainhash
 
 import (
-	"errors"
 	"fmt"
 	"os"
+
+	"github.com/AdguardTeam/golibs/errors"
 )
 
 // ErrBadIndexSize is returned by [Open] when the size of the blocklist file is

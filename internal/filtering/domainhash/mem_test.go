@@ -65,6 +65,15 @@ func TestDetectMemBudget(t *testing.T) {
 	budget := DetectMemBudget(0)
 	require.GreaterOrEqual(t, budget, MinMemBudgetBytes, "budget")
 
-	assert.Equal(t, MinMemBudgetBytes, DetectMemBudget(int64(1)<<62), "huge margin")
+	huge := DetectMemBudget(int64(1) << 62)
+	require.GreaterOrEqual(t, huge, MinMemBudgetBytes, "huge margin")
+	if _, ok := availableMemory(); ok {
+		// On Linux, an enormous margin clamps to the floor.
+		assert.Equal(t, MinMemBudgetBytes, huge, "huge margin clamps")
+	} else {
+		// Without /proc/meminfo, DetectMemBudget falls back to the default.
+		assert.Equal(t, DefaultMemBudgetBytes, huge, "huge margin fallback")
+	}
+
 	require.GreaterOrEqual(t, DetectMemBudget(-1), MinMemBudgetBytes, "negative margin")
 }

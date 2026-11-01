@@ -182,11 +182,12 @@ func saveProxyDNSCacheCount(path string, p *proxy.Proxy) (n int, err error) {
 		return 0, err
 	}
 
-	if err = os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err = os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return 0, fmt.Errorf("creating cache persist dir: %w", err)
 	}
 
 	tmp := path + ".tmp"
+	// #nosec G304 -- path is built from the configured DataDir, not user input.
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("creating cache persist temp: %w", err)
@@ -242,6 +243,7 @@ func saveProxyDNSCacheCount(path string, p *proxy.Proxy) (n int, err error) {
 // loadProxyDNSCache loads entries from path into p and returns how many were
 // restored (expired skipped).
 func loadProxyDNSCache(path string, p *proxy.Proxy) (n int, err error) {
+	// #nosec G304 -- path is built from the configured DataDir, not user input.
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, err

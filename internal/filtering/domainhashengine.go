@@ -253,3 +253,49 @@ func logDomainHashDisabled(ctx context.Context, l *slog.Logger) {
 
 	l.DebugContext(ctx, "domainhash index disabled")
 }
+
+// matchDomainHashHost reports whether host is blocked by the domain-hash index.
+func (d *DNSFilter) matchDomainHashHost(
+	ctx context.Context,
+	host string,
+	setts *Settings,
+) (res Result, ok bool) {
+	if !setts.ProtectionEnabled || d.domainHashIndex == nil {
+		return Result{}, false
+	}
+
+	if !d.domainHashIndex.ContainsDomain(host) {
+		return Result{}, false
+	}
+
+	d.logger.DebugContext(ctx, "domainhash matched host", "host", host)
+
+	return Result{
+		Rules: []*ResultRule{{
+			Text: "domainhash:" + host,
+		}},
+		Reason:     FilteredBlockList,
+		IsFiltered: true,
+	}, true
+}
+
+// prepareDomainHashBlocks builds the domain-hash index when enabled and returns
+// the leftover complex block filters for urlfilter.  When disabled, it returns
+// the original filters unchanged.
+func (d *DNSFilter) prepareDomainHashBlocks(
+	ctx context.Context,
+	blockFilters []Filter,
+) (complexBlockFilters []Filter, domainIdx *domainhash.Index, err error) {
+	if d.conf == nil || !d.conf.DomainHashEnabled {
+		logDomainHashDisabled(ctx, d.logger)
+
+		return blockFilters, nil, nil
+	}
+
+	complexBlockFilters, domainIdx, err = d.buildDomainHashIndex(ctx, blockFilters)
+	if err != nil {
+		return nil, nil, fmt.Errorf("domainhash: %w", err)
+	}
+
+	return complexBlockFilters, domainIdx, nil
+}

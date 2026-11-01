@@ -796,15 +796,9 @@ func (d *DNSFilter) initFiltering(ctx context.Context, allowFilters, blockFilter
 
 	freeOSMemory()
 
-	complexBlockFilters := blockFilters
-	var domainIdx *domainhash.Index
-	if d.conf != nil && d.conf.DomainHashEnabled {
-		complexBlockFilters, domainIdx, err = d.buildDomainHashIndex(ctx, blockFilters)
-		if err != nil {
-			return fmt.Errorf("domainhash: %w", err)
-		}
-	} else {
-		logDomainHashDisabled(ctx, d.logger)
+	complexBlockFilters, domainIdx, err := d.prepareDomainHashBlocks(ctx, blockFilters)
+	if err != nil {
+		return err
 	}
 	defer func() {
 		if err != nil {
@@ -812,6 +806,25 @@ func (d *DNSFilter) initFiltering(ctx context.Context, allowFilters, blockFilter
 		}
 	}()
 
+	err = d.swapFilteringEngines(ctx, fp, complexBlockFilters, allowFilters, domainIdx)
+	if err != nil {
+		return err
+	}
+
+	d.logger.DebugContext(ctx, "initialized filtering engine")
+
+	return nil
+}
+
+// swapFilteringEngines builds urlfilter engines from the given filters and
+// installs them together with domainIdx under engineLock.
+func (d *DNSFilter) swapFilteringEngines(
+	ctx context.Context,
+	fp fingerprint,
+	complexBlockFilters []Filter,
+	allowFilters []Filter,
+	domainIdx *domainhash.Index,
+) (err error) {
 	var rulesStorage *filterlist.RuleStorage
 	rulesStorage, err = newRuleStorage(complexBlockFilters)
 	if err != nil {
@@ -837,21 +850,16 @@ func (d *DNSFilter) initFiltering(ctx context.Context, allowFilters, blockFilter
 	filteringEngine := urlfilter.NewDNSEngine(rulesStorage)
 	filteringEngineAllow := urlfilter.NewDNSEngine(rulesStorageAllow)
 
-	func() {
-		d.engineLock.Lock()
-		defer d.engineLock.Unlock()
+	d.engineLock.Lock()
+	defer d.engineLock.Unlock()
 
-		d.reset(ctx)
-		d.rulesStorage = rulesStorage
-		d.filteringEngine = filteringEngine
-		d.rulesStorageAllow = rulesStorageAllow
-		d.filteringEngineAllow = filteringEngineAllow
-		d.domainHashIndex = domainIdx
-	}()
-
+	d.reset(ctx)
+	d.rulesStorage = rulesStorage
+	d.filteringEngine = filteringEngine
+	d.rulesStorageAllow = rulesStorageAllow
+	d.filteringEngineAllow = filteringEngineAllow
+	d.domainHashIndex = domainIdx
 	d.engineFingerprint, d.hasEngine = fp, true
-
-	d.logger.DebugContext(ctx, "initialized filtering engine")
 
 	return nil
 }
@@ -995,55 +1003,67 @@ func (d *DNSFilter) matchHost(
 		}
 	}
 
-	var dnsres *urlfilter.DNSResult
-	var matchedEngine bool
-	if d.filteringEngine != nil {
-		dnsres, matchedEngine = d.filteringEngine.MatchRequest(ufReq)
-
-		// Check DNS rewrites first, because the API there is a bit awkward.
-		dnsRWRes := d.processDNSResultRewrites(dnsres, host)
-		if dnsRWRes.Reason != NotFilteredNotFound {
-			return dnsRWRes, nil
-		}
-
-		if matchedEngine {
-			if !setts.ProtectionEnabled {
-				// Don't check non-dnsrewrite filtering results.
-				return Result{}, nil
-			}
-
-			res = d.matchHostProcessDNSResult(rrtype, dnsres)
-			// Whitelist exceptions that stayed in the complex rule set must
-			// win over the domain-hash index (simple domains were diverted).
-			if res.Reason == NotFilteredAllowList || res.IsFiltered {
-				for _, r := range res.Rules {
-					d.logger.DebugContext(
-						ctx,
-						"found rule for host",
-						"host", host,
-						"rule", r.Text,
-						"filter_list_id", r.FilterListID,
-					)
-				}
-
-				return res, nil
-			}
-		}
+	engineRes, done := d.matchHostProcessFilteringEngine(ctx, host, rrtype, setts, ufReq)
+	if done {
+		return engineRes, nil
 	}
 
-	if setts.ProtectionEnabled && d.domainHashIndex != nil && d.domainHashIndex.ContainsDomain(host) {
-		d.logger.DebugContext(ctx, "domainhash matched host", "host", host)
-
-		return Result{
-			Rules: []*ResultRule{{
-				Text: "domainhash:" + host,
-			}},
-			Reason:     FilteredBlockList,
-			IsFiltered: true,
-		}, nil
+	hashRes, ok := d.matchDomainHashHost(ctx, host, setts)
+	if ok {
+		return hashRes, nil
 	}
 
 	return Result{}, nil
+}
+
+// matchHostProcessFilteringEngine runs the urlfilter DNS engine path for
+// matchHost.  done is true when the caller should return res immediately.
+func (d *DNSFilter) matchHostProcessFilteringEngine(
+	ctx context.Context,
+	host string,
+	rrtype uint16,
+	setts *Settings,
+	ufReq *urlfilter.DNSRequest,
+) (res Result, done bool) {
+	if d.filteringEngine == nil {
+		return Result{}, false
+	}
+
+	dnsres, matchedEngine := d.filteringEngine.MatchRequest(ufReq)
+
+	// Check DNS rewrites first, because the API there is a bit awkward.
+	dnsRWRes := d.processDNSResultRewrites(dnsres, host)
+	if dnsRWRes.Reason != NotFilteredNotFound {
+		return dnsRWRes, true
+	}
+
+	if !matchedEngine {
+		return Result{}, false
+	}
+
+	if !setts.ProtectionEnabled {
+		// Don't check non-dnsrewrite filtering results.
+		return Result{}, true
+	}
+
+	res = d.matchHostProcessDNSResult(rrtype, dnsres)
+	// Whitelist exceptions that stayed in the complex rule set must win over
+	// the domain-hash index (simple domains were diverted).
+	if res.Reason != NotFilteredAllowList && !res.IsFiltered {
+		return Result{}, false
+	}
+
+	for _, r := range res.Rules {
+		d.logger.DebugContext(
+			ctx,
+			"found rule for host",
+			"host", host,
+			"rule", r.Text,
+			"filter_list_id", r.FilterListID,
+		)
+	}
+
+	return res, true
 }
 
 // makeResult returns a properly constructed Result.

@@ -152,6 +152,14 @@ type DNSConfig struct {
 	// CacheOptimistic defines if optimistic cache mechanism should be used.
 	CacheOptimistic bool `yaml:"cache_optimistic"`
 
+	// CachePersistEnabled dumps the DNS cache to disk and reloads it on start
+	// (Next-Gen).
+	CachePersistEnabled bool `yaml:"cache_persist_enabled"`
+
+	// CachePersistInterval is how often the live cache is flushed to disk when
+	// CachePersistEnabled is true.  Zero means the default (5 minutes).
+	CachePersistInterval timeutil.Duration `yaml:"cache_persist_interval"`
+
 	// EnableDNSSEC defines whether the proxy should set the AD/DO bits in the
 	// upstream requests.
 	EnableDNSSEC bool `yaml:"enable_dnssec"`

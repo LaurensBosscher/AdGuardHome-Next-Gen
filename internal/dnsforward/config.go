@@ -128,6 +128,14 @@ type Config struct {
 	// when cache is optimistic.
 	CacheOptimisticMaxAge timeutil.Duration `yaml:"cache_optimistic_max_age"`
 
+	// CachePersistEnabled dumps the DNS cache to disk and reloads it on start
+	// so warm answers survive process restarts (Next-Gen).
+	CachePersistEnabled bool `yaml:"cache_persist_enabled"`
+
+	// CachePersistInterval is how often the live cache is flushed to disk when
+	// CachePersistEnabled is true.  Zero means the default (5 minutes).
+	CachePersistInterval timeutil.Duration `yaml:"cache_persist_interval"`
+
 	// Other settings
 
 	// BogusNXDomain is the list of IP addresses, responses with them will be
@@ -307,6 +315,10 @@ type ServerConfig struct {
 	// PendingRequestsEnabled defines if duplicate requests should be forwarded
 	// to upstreams along with the original one.
 	PendingRequestsEnabled bool
+
+	// DataDir is the absolute path to AdGuard Home's data directory.  Used for
+	// optional DNS cache persistence; may be empty when persistence is off.
+	DataDir string
 }
 
 // newProxyConfig creates and validates configuration for the main proxy.

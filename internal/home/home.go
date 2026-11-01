@@ -919,7 +919,7 @@ func run(
 	fatalOnError(ctx, baseLogger, err)
 
 	if !isFirstRun {
-		runDNSServer(ctx, baseLogger, tlsMgr, confModifier, statsDir, querylogDir, httpReg, hc)
+		runDNSServer(ctx, baseLogger, tlsMgr, confModifier, statsDir, querylogDir, dataDirPath, httpReg, hc)
 
 		doHSrv := newDoHServer(&doHServerConfig{
 			handler: globalContext.dnsServer,
@@ -948,10 +948,11 @@ func runDNSServer(
 	confModifier *defaultConfigModifier,
 	statsDir string,
 	querylogDir string,
+	dataDirPath string,
 	httpReg *aghhttp.DefaultRegistrar,
 	hc *aghnet.HostsContainer,
 ) {
-	err := initDNS(ctx, slogLogger, tlsMgr, confModifier, httpReg, statsDir, querylogDir, hc)
+	err := initDNS(ctx, slogLogger, tlsMgr, confModifier, httpReg, statsDir, querylogDir, dataDirPath, hc)
 	fatalOnError(ctx, slogLogger, err)
 
 	go func() {
@@ -1470,6 +1471,7 @@ func cmdlineUpdate(
 		},
 		nil,
 		agh.EmptyConfigModifier{},
+		"",
 	)
 	fatalOnError(ctx, l, err)
 

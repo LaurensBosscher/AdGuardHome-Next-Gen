@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -911,6 +912,7 @@ func (web *webAPI) reconfigureDNSServer(ctx context.Context) (err error) {
 		web.httpReg,
 		globalContext.clients.storage,
 		web.confModifier,
+		filepath.Join(web.conf.workDir, dataDir),
 	)
 	if err != nil {
 		return fmt.Errorf("generating forwarding dns server config: %w", err)

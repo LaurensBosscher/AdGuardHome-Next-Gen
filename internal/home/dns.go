@@ -51,6 +51,7 @@ func initDNS(
 	httpReg aghhttp.Registrar,
 	statsDir string,
 	querylogDir string,
+	dataDirPath string,
 	hc *aghnet.HostsContainer,
 ) (err error) {
 	anonymizer := config.anonymizer()
@@ -125,6 +126,7 @@ func initDNS(
 		params,
 		httpReg,
 		confModifier,
+		dataDirPath,
 	)
 	if err != nil {
 		return fmt.Errorf("creating dns server: %w", err)
@@ -143,6 +145,7 @@ func initDNSServer(
 	params dnsforward.DNSCreateParams,
 	httpReg aghhttp.Registrar,
 	confModifier agh.ConfigModifier,
+	dataDirPath string,
 ) (err error) {
 	globalContext.dnsServer, err = dnsforward.NewServer(params)
 	// TODO(m.kazantsev):  Investigate if the server should be closed in case of
@@ -167,6 +170,7 @@ func initDNSServer(
 		httpReg,
 		globalContext.clients.storage,
 		confModifier,
+		dataDirPath,
 	)
 	if err != nil {
 		return fmt.Errorf("creating new dns server config: %w", err)
@@ -247,6 +251,7 @@ func newServerConfig(
 	httpReg aghhttp.Registrar,
 	clientsContainer dnsforward.ClientsContainer,
 	confModifier agh.ConfigModifier,
+	dataDirPath string,
 ) (newConf *dnsforward.ServerConfig, err error) {
 	hosts := aghalg.CoalesceSlice(dnsConf.BindHosts, []netip.Addr{netutil.IPv4Localhost()})
 
@@ -271,6 +276,7 @@ func newServerConfig(
 		ServeHTTP3:             dnsConf.ServeHTTP3,
 		UseHTTP3Upstreams:      dnsConf.UseHTTP3Upstreams,
 		ServePlainDNS:          dnsConf.ServePlainDNS,
+		DataDir:                dataDirPath,
 	}
 
 	if dnsConf.PendingRequests != nil {
@@ -336,6 +342,8 @@ func dnsConfigToInternal(
 		CacheOptimistic:          c.CacheOptimistic,
 		CacheOptimisticAnswerTTL: c.CacheOptimisticAnswerTTL,
 		CacheOptimisticMaxAge:    c.CacheOptimisticMaxAge,
+		CachePersistEnabled:      c.CachePersistEnabled,
+		CachePersistInterval:     c.CachePersistInterval,
 		BogusNXDomain:            c.BogusNXDomain,
 		AAAADisabled:             c.AAAADisabled,
 		EnableDNSSEC:             c.EnableDNSSEC,

@@ -18,7 +18,10 @@ See also the [v0.107.80 GitHub milestone][ms-v0.107.80].
 NOTE: Add new changes BELOW THIS COMMENT.
 -->
 
-### Changed
+### Added
+
+- DNS cache statistics on the dashboard (ported from upstream
+  [#8642](https://github.com/AdguardTeam/AdGuardHome/pull/8642) / [#1453], [#8128]).
 
 - Optional DNS cache persistence (`dns.cache_persist_enabled`): dump/reload the
   dnsproxy cache under `data/dns_cache.bin` so warm answers survive restarts on
@@ -27,6 +30,10 @@ NOTE: Add new changes BELOW THIS COMMENT.
 - The dashboard no longer shows zero-valued statistics for disabled Safe
   Browsing, Parental Control, and Safe Search features (ported from upstream
   [#8538](https://github.com/AdguardTeam/AdGuardHome/pull/8538) / [#689]).
+
+### Changed
+
+
 
 ### Security
 

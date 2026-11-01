@@ -10,7 +10,13 @@ import {
 import theme from 'panel/lib/theme';
 import { PageLoader } from 'panel/common/ui/Loader';
 import { dashboardState, toggleProtection, getClients } from 'panel/stores/dashboard';
-import { statsState, getStats, getStatsConfig, enableStatistics } from 'panel/stores/stats';
+import {
+    statsState,
+    getStats,
+    getStatsConfig,
+    getCacheInfo,
+    enableStatistics,
+} from 'panel/stores/stats';
 import { accessState, getAccessList } from 'panel/stores/access';
 import { initSettings, settingsState } from 'panel/stores/settings';
 import { getStoredStatsPeriod, getClampedMaxInterval } from 'panel/helpers/statistics';
@@ -102,6 +108,7 @@ export const Dashboard = () => {
         getClients();
         getAccessList();
         getStatsConfig();
+        getCacheInfo();
     });
 
     createEffect(() => {
@@ -121,6 +128,7 @@ export const Dashboard = () => {
         getClients();
         getAccessList();
         getStatsConfig();
+        getCacheInfo();
         getStats(selectedPeriod());
     };
 
@@ -219,6 +227,9 @@ export const Dashboard = () => {
                                 numReplacedSafebrowsing={statsState.numReplacedSafebrowsing}
                                 numReplacedParental={statsState.numReplacedParental}
                                 numReplacedSafesearch={statsState.numReplacedSafesearch}
+                                numCacheHits={statsState.numCacheHits}
+                                numCacheMisses={statsState.numCacheMisses}
+                                cacheInfo={statsState.cacheInfo}
                                 avgProcessingTime={statsState.avgProcessingTime}
                                 showSafebrowsing={showSafebrowsingStats()}
                                 showParental={showParentalStats()}

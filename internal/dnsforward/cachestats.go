@@ -3,7 +3,6 @@ package dnsforward
 import (
 	"reflect"
 	"sync"
-	"unsafe"
 
 	"github.com/AdguardTeam/dnsproxy/proxy"
 	glcache "github.com/AdguardTeam/golibs/cache"
@@ -34,11 +33,11 @@ func (cs *cacheStats) add(st glcache.Stats) {
 // caches of p.  It returns a zero cacheStats if p has no cache.  p must not be
 // nil.
 //
-// Packages reflect and unsafe are used here, because dnsproxy doesn't provide
-// any API to inspect its cache, so its unexported fields have to be read
-// directly.  The layout is checked by tests, so a dnsproxy update that changes
-// it is detected early.  This is also the reason this file is excluded from
-// the blocklisted imports check in go-lint.sh.
+// Package reflect and [fieldValue] (which uses unsafe) are used here, because
+// dnsproxy doesn't provide any API to inspect its cache, so its unexported
+// fields have to be read directly.  The layout is checked by tests, so a
+// dnsproxy update that changes it is detected early.  This is also the reason
+// this file is excluded from the blocklisted imports check in go-lint.sh.
 func proxyCacheStats(p *proxy.Proxy) (cs cacheStats, err error) {
 	cacheField := reflect.ValueOf(p).Elem().FieldByName("cache")
 	if !cacheField.IsValid() || cacheField.Kind() != reflect.Pointer {
@@ -92,20 +91,4 @@ func lockedCacheStats(
 	defer mu.Unlock()
 
 	return items.Stats(), nil
-}
-
-// fieldValue returns the value of the possibly unexported field of the
-// addressable struct value v with the given name.  ok is false if there is no
-// such field or it has a type other than T.
-func fieldValue[T any](v reflect.Value, name string) (val T, ok bool) {
-	f := v.FieldByName(name)
-	if !f.IsValid() || !f.CanAddr() || f.Type() != reflect.TypeFor[T]() {
-		var zero T
-
-		return zero, false
-	}
-
-	// #nosec G103 -- The field is addressable and its type has been checked
-	// above, so the pointer is valid and of the right type.
-	return *(*T)(unsafe.Pointer(f.UnsafeAddr())), true
 }

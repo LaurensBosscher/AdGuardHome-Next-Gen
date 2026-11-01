@@ -87,6 +87,7 @@ beforeEach(async () => {
     mocks.safesearchSettings.mockResolvedValue(undefined);
 
     await initSettings();
+    expect(settingsState.loadStatus).toBe('loaded');
 });
 
 describe('disableSafeBrowsing', () => {

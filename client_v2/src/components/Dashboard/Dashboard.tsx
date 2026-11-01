@@ -12,6 +12,7 @@ import { PageLoader } from 'panel/common/ui/Loader';
 import { dashboardState, toggleProtection, getClients } from 'panel/stores/dashboard';
 import { statsState, getStats, getStatsConfig, enableStatistics } from 'panel/stores/stats';
 import { accessState, getAccessList } from 'panel/stores/access';
+import { initSettings, settingsState } from 'panel/stores/settings';
 import { getStoredStatsPeriod, getClampedMaxInterval } from 'panel/helpers/statistics';
 import { LocalStorageHelper, LOCAL_STORAGE_KEYS } from 'panel/helpers/localStorageHelper';
 import { ONE_SECOND_IN_MS, DAY, STATS_INTERVALS_DAYS } from 'panel/helpers/constants';
@@ -95,6 +96,9 @@ export const Dashboard = () => {
     });
 
     onMount(() => {
+        if (settingsState.loadStatus === 'idle' || settingsState.loadStatus === 'failed') {
+            initSettings();
+        }
         getClients();
         getAccessList();
         getStatsConfig();
@@ -142,6 +146,25 @@ export const Dashboard = () => {
     // loader can never flash back in.
     const isInitialLoading = () => !statsState.statsInitialized;
 
+    const featureStatusLoaded = () => settingsState.loadStatus === 'loaded';
+    const hasFeatureStats = (count: number, series: number[]) =>
+        count !== 0 || series.some((value) => value !== 0);
+    const showSafebrowsingStats = () =>
+        !featureStatusLoaded() ||
+        settingsState.settingsList.safebrowsing.enabled !== false ||
+        hasFeatureStats(
+            statsState.numReplacedSafebrowsing,
+            statsState.replacedSafebrowsing,
+        );
+    const showParentalStats = () =>
+        !featureStatusLoaded() ||
+        settingsState.settingsList.parental.enabled !== false ||
+        hasFeatureStats(statsState.numReplacedParental, statsState.replacedParental);
+    const showSafesearchStats = () =>
+        !featureStatusLoaded() ||
+        settingsState.settingsList.safesearch.enabled !== false ||
+        statsState.numReplacedSafesearch !== 0;
+
     return (
         <div class={theme.layout.container}>
             <div class={theme.layout.containerIn}>
@@ -175,6 +198,8 @@ export const Dashboard = () => {
                         replacedSafebrowsing={statsState.replacedSafebrowsing}
                         replacedParental={statsState.replacedParental}
                         timeUnits={statsState.timeUnits}
+                        showSafebrowsing={showSafebrowsingStats()}
+                        showParental={showParentalStats()}
                     />
 
                     <Show
@@ -195,6 +220,9 @@ export const Dashboard = () => {
                                 numReplacedParental={statsState.numReplacedParental}
                                 numReplacedSafesearch={statsState.numReplacedSafesearch}
                                 avgProcessingTime={statsState.avgProcessingTime}
+                                showSafebrowsing={showSafebrowsingStats()}
+                                showParental={showParentalStats()}
+                                showSafesearch={showSafesearchStats()}
                             />
 
                             <TopClients

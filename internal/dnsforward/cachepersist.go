@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/AdguardTeam/dnsproxy/proxy"
 	glcache "github.com/AdguardTeam/golibs/cache"
@@ -440,4 +441,20 @@ func readBytes(r io.Reader) (b []byte, err error) {
 	_, err = io.ReadFull(r, b)
 
 	return b, err
+}
+
+// fieldValue returns the value of the possibly unexported field of the
+// addressable struct value v with the given name.  ok is false if there is no
+// such field or it has a type other than T.
+func fieldValue[T any](v reflect.Value, name string) (val T, ok bool) {
+	f := v.FieldByName(name)
+	if !f.IsValid() || !f.CanAddr() || f.Type() != reflect.TypeFor[T]() {
+		var zero T
+
+		return zero, false
+	}
+
+	// #nosec G103 -- The field is addressable and its type has been checked
+	// above, so the pointer is valid and of the right type.
+	return *(*T)(unsafe.Pointer(f.UnsafeAddr())), true
 }

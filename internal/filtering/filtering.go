@@ -205,6 +205,12 @@ type Config struct {
 	// DomainHashMemMarginBytes is subtracted from MemAvailable when sizing the
 	// builder batch.  Zero means domainhash.DefaultMemBudgetBytes.
 	DomainHashMemMarginBytes int64 `yaml:"domain_hash_mem_margin_bytes"`
+
+	// DomainHashMemBudgetBytes is an optional absolute ceiling for the
+	// domain-hash builder batch, in bytes.  Zero means no absolute cap; the
+	// budget is then derived from MemAvailable, domain_hash_mem_margin_bytes,
+	// and GOMEMLIMIT when set.  See domainhash.ResolveMemBudget.
+	DomainHashMemBudgetBytes int64 `yaml:"domain_hash_mem_budget_bytes"`
 }
 
 // BlockingMode is an enum of all allowed blocking modes.
@@ -284,6 +290,12 @@ type DNSFilter struct {
 	// nil when the feature is disabled or the index has not been built yet.
 	// Access only while holding engineLock.
 	domainHashIndex *domainhash.Index
+
+	// domainHashOnlyBlocks is true when the domain-hash index is active and
+	// there are no complex block leftovers for urlfilter.  In that case
+	// matchHost may check the hash index before the block engine.  Access only
+	// while holding engineLock.
+	domainHashOnlyBlocks bool
 
 	// initMu serializes rebuilds of the filtering engines performed by
 	// [DNSFilter.initFiltering].  A rebuild keeps the previous engines alive
@@ -859,6 +871,7 @@ func (d *DNSFilter) swapFilteringEngines(
 	d.rulesStorageAllow = rulesStorageAllow
 	d.filteringEngineAllow = filteringEngineAllow
 	d.domainHashIndex = domainIdx
+	d.domainHashOnlyBlocks = domainIdx != nil && len(complexBlockFilters) == 0
 	d.engineFingerprint, d.hasEngine = fp, true
 
 	return nil
@@ -1003,14 +1016,26 @@ func (d *DNSFilter) matchHost(
 		}
 	}
 
+	// When every simple block was diverted and no complex leftovers remain,
+	// the hash index cannot be overridden by the block engine — check it
+	// before urlfilter.
+	if d.domainHashOnlyBlocks {
+		hashRes, ok := d.matchDomainHashHost(ctx, host, setts)
+		if ok {
+			return hashRes, nil
+		}
+	}
+
 	engineRes, done := d.matchHostProcessFilteringEngine(ctx, host, rrtype, setts, ufReq)
 	if done {
 		return engineRes, nil
 	}
 
-	hashRes, ok := d.matchDomainHashHost(ctx, host, setts)
-	if ok {
-		return hashRes, nil
+	if !d.domainHashOnlyBlocks {
+		hashRes, ok := d.matchDomainHashHost(ctx, host, setts)
+		if ok {
+			return hashRes, nil
+		}
 	}
 
 	return Result{}, nil

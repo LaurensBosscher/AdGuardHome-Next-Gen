@@ -100,25 +100,26 @@ use 64-bit for stricter threat-intel).
 
 **Verdict: raw FNV is cheap; end-to-end build is sort/merge + I/O.**
 
-Desktop (`GOMAXPROCS=4`): domainhash build ≈ **0.15 s / 0.6 s / 0.9 s** for
-100k / 500k / 1M. OpenStick estimate (×~12 single-thread factor):
-**~2 s / ~7–9 s / ~10–15 s**. Warm lookups stay ~µs — negligible vs DNS RTT.
+Desktop (`GOMAXPROCS=4`, 2026-11-12): domainhash build ≈ **0.025 s / 0.11 s /
+0.24 s** for 100k / 500k / 1M (~3.7–6× faster than the 2026-11-01 Next-Gen
+baseline after hash-only batches). OpenStick estimate (×~12 single-thread
+factor): **~0.3 s / ~1.3 s / ~3 s**. Warm lookups stay ~sub-µs on desktop /
+low-µs on A53 — negligible vs DNS RTT.
 
 Upstream urlfilter rebuild cost is dominated by parsing into `NetworkRule`,
 building `ShortcutIndex`, and GC over millions of heap objects — and its
-**RSS stays ~25 / 90 / 155 MiB** for those sizes versus a **~0.5 / 2.4 / 4.8 MiB**
+**RSS stays ~23 / 84 / 149 MiB** for those sizes versus a **~0.5 / 2.4 / 4.8 MiB**
 mmap file for domainhash.
 
-Worth doing next (cheap):
+Already done:
 
-- parallel hash workers across cores while filling a batch
+- hash-only in-memory batches / run files
+- parallel filter-file divert (`min(max(GOMAXPROCS-1, 1), 8)` workers)
+
+Still optional later:
+
 - parallel run merge when run count is high
-
-Not worth early investment:
-
 - hand-written NEON FNV kernels — build time is not FNV-bound today
-- switching hash family for speed alone — prefer **64-bit width** if collision
-  policy matters
 
 See **[BENCHMARKS.md](BENCHMARKS.md)** for the full tables.
 
@@ -194,6 +195,11 @@ dns:
 filtering:
   domain_hash_enabled: true
   domain_hash_bytes: 5  # 40-bit; use 8 for stricter TI collision policy
+  # domain_hash_mem_budget_bytes: 16777216  # optional absolute cap
+```
+
+```bash
+GOMEMLIMIT=96MiB GOGC=50
 ```
 
 

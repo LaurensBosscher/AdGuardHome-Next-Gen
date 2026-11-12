@@ -5,9 +5,10 @@
     <img alt="AdGuard Home Next-Gen" src="doc/adguard_home_lightmode.svg" width="300px">
   </picture>
 </p>
-<h3 align="center">AdGuard Home Next-Gen — for routers, OpenSticks &amp; SBCs</h3>
+<h3 align="center">AdGuard Home Next-Gen — experimental, for routers &amp; SBCs</h3>
 <p align="center">
-  Fork of AdGuard Home with memory-efficient DNS blocklists for constrained devices.
+  Experimental fork of AdGuard Home: leaner DNS blocklists for low-power devices
+  (and faster on big boxes too). Homelab-grade — not for hospitals.
 </p>
 <p align="center">
   <a href="https://adguard.com/">AdGuard.com</a> |
@@ -41,53 +42,83 @@
 
 ## AdGuard Home Next-Gen
 
-**Goal:** an AdGuard Home build optimised for **routers**, **OpenStick**-class
-modems, and other **SBCs** with roughly **100–512 MiB** of RAM — so that large
-DNS blocklists (threat-intelligence feeds with **500k–1M+** domains) stay
-usable without OOMing during filter rebuilds.
+> **Experimental fork.** This tree focuses on **low-cost / low-power** hardware
+> (routers, OpenStick-class modems, SBCs with roughly **100–512 MiB** RAM) so
+> large DNS blocklists (**500k–1M+** domains) stay usable without OOMing on
+> filter rebuilds. The same work also **speeds up and shrinks memory use on
+> larger machines**.
+>
+> **Reliability is untested** — here be dragons. Do **not** run this as the DNS
+> server for a hospital, airline, or anything life-critical. It is aimed at
+> **homelabs** and similar environments where you can recover from surprises.
 
-This repository is a fork of upstream
-[AdGuard Home](https://github.com/AdguardTeam/AdGuardHome)
-(base tag `v1.0.0-b.1`). The domain-hash index is inspired by
+Fork of upstream [AdGuard Home](https://github.com/AdguardTeam/AdGuardHome)
+(base tag `v1.0.0-b.1`). Domain-hash index inspired by
 [esp32-c3-adblock](https://github.com/M-Abozaid/esp32-c3-adblock)
-(sorted truncated FNV-1a hashes + binary search on constrained hardware).
+(sorted truncated FNV-1a hashes + binary search).
 
-Full design notes: [docs/NEXTGEN.md](docs/NEXTGEN.md).  
-Full numbers: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+Design notes: [docs/NEXTGEN.md](docs/NEXTGEN.md) · Full tables:
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md)
+
+### Benchmarks (vs upstream urlfilter)
+
+Headline numbers for **1 000 000** synthetic `||domain^` rules on a desktop
+(AMD Ryzen AI MAX+ 395, linux/amd64, go1.27.3, `GOMAXPROCS=4`, **2026-11-12**):
+
+| | **urlfilter** (upstream path) | **domainhash** (Next-Gen) |
+|---|---:|---:|
+| Build | 922 ms | **242 ms** (~3.8× faster) |
+| Steady memory | **~149 MiB** RSS (live heap) | **~4.8 MiB** mmap / page cache |
+| Warm hit lookup | 2384 ns | **141 ns** (~17× faster) |
+
+Upstream path uses `github.com/AdguardTeam/urlfilter v0.23.4` (same module as
+AdGuard Home
+[`master` @ `df45d7c0`](https://github.com/AdguardTeam/AdGuardHome/commit/df45d7c097dc172c19557ee29e605bf36b1cd62f)).
+
+#### Scale table
+
+| N | engine | build | RSS Δ | heap Δ | on-disk | warm hit |
+|---:|---|---:|---:|---:|---:|---:|
+| 100k | urlfilter (upstream) | 57 ms | **22.7 MiB** | 2.1 MiB | — | 725 ns |
+| 100k | **domainhash** | **25 ms** | 5.1 MiB* | ~0 | **488 KiB** | **125 ns** |
+| 500k | urlfilter | 359 ms | **84.2 MiB** | 10.5 MiB | — | 1461 ns |
+| 500k | **domainhash** | **108 ms** | 21.1 MiB* | ~0 | **2.4 MiB** | **131 ns** |
+| 1M | urlfilter | 922 ms | **149.3 MiB** | 21.0 MiB | — | 2384 ns |
+| 1M | **domainhash** | **242 ms** | 40.4 MiB* | ~0 | **4.8 MiB** | **141 ns** |
+
+* Domainhash RSS Δ right after `Build()` still includes transient builder
+scratch. **Steady-state for lookups is the mmap file** (~0.5 / 2.4 / 4.8 MiB
+page cache). Urlfilter RSS is live heap and is not reclaimable without dropping
+the engine.
+
+Vs the previous Next-Gen desktop numbers (2026-11-01), domainhash **build is
+~3.7–6× faster** at the same file sizes. Warm hits stay flat with N; urlfilter
+hits still grow with list size. Larger machines see the same wins — less RAM
+and faster rebuilds — not only SBCs.
+
+OpenStick estimate (×~12 single-thread factor, 4× A53 @ ~1 GHz): domainhash
+build **~0.3 / ~1.3 / ~3 s** for 100k / 500k / 1M.
+
+```bash
+GOMAXPROCS=4 go run ./scripts/bench-domainhash -n 100000,500000,1000000 -lookups 20000
+```
 
 ### What is different from stock AdGuard Home?
 
 | | Stock AdGuard Home | **Next-Gen** |
 |---|---|---|
 | Simple DNS block rules (`hosts`, `\|\|domain^`) | Full `urlfilter` `NetworkRule` objects (~hundreds of bytes each + shortcut index) | Diverted into a **sorted hash blob** on disk (`blocklist.bin`), **mmap**'d and binary-searched |
-| Steady memory for ~1M domains | ~**155 MiB** RSS for the rule engine alone (synthetic) | ~**5 MiB** on-disk / page-cache resident index |
-| Filter rebuild peak | Often **2–3×** live engine size (old + new + `GOGC`); TI-class lists can spike **hundreds of MiB** | Batched hashing sized from `MemAvailable − margin`; rebuild peak stays near the small complex leftover engine |
+| Steady memory for ~1M domains | ~**150 MiB** RSS for the rule engine alone (synthetic, 2026-11-12) | ~**5 MiB** on-disk / page-cache resident index |
+| Filter rebuild peak | Often **2–3×** live engine size (old + new + `GOGC`); TI-class lists can spike **hundreds of MiB** | Batched hashing sized from `MemAvailable − margin` (+ optional absolute cap / `GOMEMLIMIT`); rebuild peak stays near the small complex leftover engine |
 | Complex / allowlist rules | `urlfilter` | Still `urlfilter` (only rules a hash table cannot express) |
 | Lookup I/O | In-memory rule graph | Warm lookups are **RAM-speed** over the kernel **page cache** (not a `read()` per query) |
-| Target hardware | Desktops, NAS, Pi-class and up | **Routers / OpenStick / SBCs** with tight RAM |
+| Target hardware | Desktops, NAS, Pi-class and up | **Routers / OpenStick / SBCs** first; desktops/NAS still benefit |
 
 Upstream PR
 [#8498](https://github.com/AdguardTeam/AdGuardHome/pull/8498)
 reduces rebuild peaks for stock urlfilter, but **steady-state still stores every
 rule as a rich object**. Next-Gen changes that representation for the common
 DNS-block case.
-
-### Synthetic benchmarks (desktop, 2026-11-01)
-
-Same-shape `||domain^` lists. Host: linux/amd64, `GOMAXPROCS=4`.
-
-| N | urlfilter RSS Δ | domainhash file | domainhash build (desktop / OpenStick est.) | warm hit (desktop) |
-|---:|---:|---:|---|---:|
-| 100k | ~25 MiB | 0.5 MiB | 0.15 s / **~2 s** | ~0.4 µs |
-| 500k | ~90 MiB | 2.4 MiB | 0.6 s / **~7–9 s** | ~0.3 µs |
-| 1M | ~155 MiB | 4.8 MiB | 0.9 s / **~10–15 s** | ~0.3 µs |
-
-Warm domainhash lookups stay **sub-microsecond** and almost flat with N
-(`O(log N)`). Urlfilter hit cost grows with list size.
-
-```bash
-go run ./scripts/bench-domainhash -n 100000,500000,1000000 -lookups 20000
-```
 
 ### Real-life OpenStick usage (2026-11-01)
 
@@ -118,7 +149,30 @@ device.
 filtering:
   domain_hash_enabled: true
   domain_hash_bytes: 5  # 40-bit; use 8 for stricter TI collision policy
+  # Optional absolute rebuild batch ceiling (bytes).  0 = auto from
+  # MemAvailable - domain_hash_mem_margin_bytes, also capped by GOMEMLIMIT.
+  # domain_hash_mem_budget_bytes: 16777216   # 16 MiB
+  # domain_hash_mem_margin_bytes: 33554432   # 32 MiB headroom vs MemAvailable
 ```
+
+Rebuild memory sizing (auto):
+
+1. Start from Linux `MemAvailable − domain_hash_mem_margin_bytes`
+2. If `domain_hash_mem_budget_bytes > 0`, take the minimum with that absolute cap
+3. If `GOMEMLIMIT` / `debug.SetMemoryLimit` is set, take the minimum with
+   `GOMEMLIMIT − 32MiB` reserve (floored at 8 MiB)
+4. Floor at 8 MiB; the in-memory batch itself is also capped at 16 MiB
+
+Use **`GOMEMLIMIT`** for “powerful CPU, tight RAM / cgroup” hosts (containers,
+OpenStick). Example:
+
+```bash
+GOMEMLIMIT=96MiB GOGC=50 ./AdGuardHome
+```
+
+Filter-file divert during rebuild uses up to `min(max(GOMAXPROCS-1, 1), 8)`
+workers sharing one builder (mutex on append/flush), so worker count follows
+CPU while the batch budget follows memory.
 
 AdGuard Home is a network-wide software for blocking ads and tracking. After you set it up, it'll cover ALL your home devices, and you don't need any client-side software for that.
 
@@ -127,8 +181,8 @@ It operates as a DNS server that re-routes tracking domains to a “black hole�
 [AdGuard DNS]: https://adguard-dns.io/
 
 - [AdGuard Home Next-Gen](#adguard-home-next-gen)
+    - [Benchmarks (vs upstream urlfilter)](#benchmarks-vs-upstream-urlfilter)
     - [What is different from stock AdGuard Home?](#what-is-different-from-stock-adguard-home)
-    - [Synthetic benchmarks (desktop, 2026-11-01)](#synthetic-benchmarks-desktop-2026-11-01)
     - [Real-life OpenStick usage (2026-11-01)](#real-life-openstick-usage-2026-11-01)
     - [Enable on a device](#enable-on-a-device)
 - [Getting Started](#getting-started)

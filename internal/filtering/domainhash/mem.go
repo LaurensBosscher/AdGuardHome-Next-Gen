@@ -2,7 +2,9 @@ package domainhash
 
 import (
 	"bytes"
+	"math"
 	"os"
+	"runtime/debug"
 	"strconv"
 )
 
@@ -12,12 +14,17 @@ const (
 	DefaultMemBudgetBytes int64 = 32 << 20
 
 	// MinMemBudgetBytes is the lowest memory budget returned by
-	// [DetectMemBudget].
+	// [DetectMemBudget] and [ResolveMemBudget].
 	MinMemBudgetBytes int64 = 8 << 20
 
 	// defaultBatchBytes is the maximum number of bytes the builder buffers in
 	// memory before flushing a batch.
 	defaultBatchBytes int64 = 16 << 20
+
+	// goMemLimitReserveBytes is left for the rest of the process (DNS caches,
+	// urlfilter leftovers, goroutine stacks) when GOMEMLIMIT /
+	// debug.SetMemoryLimit caps the builder budget.
+	goMemLimitReserveBytes int64 = 32 << 20
 
 	// meminfoPath is the path to the Linux memory information file.
 	meminfoPath = "/proc/meminfo"
@@ -29,22 +36,77 @@ const (
 // memory currently available on the system.  If the available memory cannot be
 // determined, [DefaultMemBudgetBytes] is returned.  The returned value is never
 // less than [MinMemBudgetBytes].
+//
+// Prefer [ResolveMemBudget] when an absolute cap or [GOMEMLIMIT] should also
+// apply.
 func DetectMemBudget(marginBytes int64) (budget int64) {
+	return ResolveMemBudget(marginBytes, 0)
+}
+
+// ResolveMemBudget sizes the builder batch from MemAvailable, an optional
+// absolute cap, and the process soft memory limit ([GOMEMLIMIT] /
+// [debug.SetMemoryLimit]).
+//
+//	budget = MemAvailable - marginBytes   (or DefaultMemBudgetBytes)
+//	budget = min(budget, absoluteCapBytes) when absoluteCapBytes > 0
+//	budget = min(budget, GOMEMLIMIT - reserve) when a memory limit is set
+//	budget = max(budget, MinMemBudgetBytes)
+//
+// absoluteCapBytes is the optional filtering.domain_hash_mem_budget_bytes
+// knob; zero means "no absolute cap".  The returned value is never less than
+// [MinMemBudgetBytes].
+func ResolveMemBudget(marginBytes, absoluteCapBytes int64) (budget int64) {
 	if marginBytes < 0 {
 		marginBytes = 0
 	}
 
 	available, ok := availableMemory()
 	if !ok {
-		return DefaultMemBudgetBytes
+		budget = DefaultMemBudgetBytes
+	} else {
+		budget = available - marginBytes
 	}
 
-	budget = available - marginBytes
+	if absoluteCapBytes > 0 {
+		budget = minPositive(budget, absoluteCapBytes)
+	}
+
+	if lim, limited := processMemoryLimit(); limited {
+		headroom := lim - goMemLimitReserveBytes
+		if headroom < MinMemBudgetBytes {
+			headroom = MinMemBudgetBytes
+		}
+		budget = minPositive(budget, headroom)
+	}
+
 	if budget < MinMemBudgetBytes {
 		return MinMemBudgetBytes
 	}
 
 	return budget
+}
+
+// minPositive returns the smaller of a and b, ignoring non-positive a so that
+// an absolute / GOMEMLIMIT cap can replace a negative MemAvailable-derived
+// budget before the MinMemBudgetBytes floor is applied.
+func minPositive(a, b int64) (n int64) {
+	if a <= 0 || b < a {
+		return b
+	}
+
+	return a
+}
+
+// processMemoryLimit reports the Go soft memory limit when one is configured
+// via GOMEMLIMIT or debug.SetMemoryLimit.  ok is false when no limit is set.
+func processMemoryLimit() (n int64, ok bool) {
+	// SetMemoryLimit(-1) returns the current limit without changing it.
+	lim := debug.SetMemoryLimit(-1)
+	if lim < 0 || lim >= math.MaxInt64/2 {
+		return 0, false
+	}
+
+	return lim, true
 }
 
 // availableMemory returns the amount of memory available for new allocations,

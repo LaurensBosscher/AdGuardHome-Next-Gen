@@ -10,9 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/AdguardTeam/AdGuardHome/internal/filtering/domainhash"
+	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/logutil/slogutil"
+	"github.com/AdguardTeam/urlfilter/rules"
 )
 
 // domainHashDirName is the subdirectory of DataDir that holds the built
@@ -22,6 +25,10 @@ const domainHashDirName = "domainhash"
 
 // domainHashComplexPrefix is the filename prefix of the complex-rule leftovers.
 const domainHashComplexPrefix = "complex-"
+
+// domainHashHitRule is the static ResultRule text used for domain-hash hits so
+// matchDomainHashHost does not allocate a per-query "domainhash:"+host string.
+const domainHashHitRule = "domainhash"
 
 // buildDomainHashIndex streams blockFilters, diverts simple hosts / ||domain^
 // rules into a disk-backed hash index, and returns the leftover complex rules
@@ -45,7 +52,7 @@ func (d *DNSFilter) buildDomainHashIndex(
 		margin = domainhash.DefaultMemBudgetBytes
 	}
 
-	budget := domainhash.DetectMemBudget(margin)
+	budget := domainhash.ResolveMemBudget(margin, d.conf.DomainHashMemBudgetBytes)
 	hashBytes := d.conf.DomainHashBytes
 
 	b, err := domainhash.NewBuilder(domainhash.DomainHashConfig{
@@ -59,19 +66,10 @@ func (d *DNSFilter) buildDomainHashIndex(
 	}
 	defer func() { _ = b.Close() }()
 
-	complexFilters = make([]Filter, 0, len(blockFilters))
-	var diverted int
-
-	for _, f := range blockFilters {
-		cf, n, splitErr := d.splitFilterForDomainHash(ctx, b, dataDir, f)
-		if splitErr != nil {
-			return nil, nil, splitErr
-		}
-
-		diverted += n
-		if cf != nil {
-			complexFilters = append(complexFilters, *cf)
-		}
+	workers := domainhash.RebuildWorkers()
+	complexFilters, diverted, err := d.splitFiltersForDomainHash(ctx, b, dataDir, blockFilters, workers)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	stats, err := b.Build()
@@ -94,6 +92,7 @@ func (d *DNSFilter) buildDomainHashIndex(
 		"runs", stats.Runs,
 		"peak_batch_bytes", stats.PeakBatchBytes,
 		"mem_budget_bytes", budget,
+		"workers", workers,
 		"complex_filters", len(complexFilters),
 	)
 
@@ -107,6 +106,89 @@ func (d *DNSFilter) buildDomainHashIndex(
 	}
 
 	return complexFilters, idx, nil
+}
+
+// splitFiltersForDomainHash splits blockFilters into the shared builder using
+// up to workers goroutines.  Each filter's complex leftovers are written to a
+// dedicated file.
+func (d *DNSFilter) splitFiltersForDomainHash(
+	ctx context.Context,
+	b *domainhash.Builder,
+	dataDir string,
+	blockFilters []Filter,
+	workers int,
+) (complexFilters []Filter, diverted int, err error) {
+	if len(blockFilters) == 0 {
+		return nil, 0, nil
+	}
+
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(blockFilters) {
+		workers = len(blockFilters)
+	}
+
+	type result struct {
+		cf  *Filter
+		n   int
+		err error
+	}
+
+	results := make([]result, len(blockFilters))
+	jobs := make(chan int, len(blockFilters))
+	for i := range blockFilters {
+		jobs <- i
+	}
+	close(jobs)
+
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if err := workerCtx.Err(); err != nil {
+					results[i] = result{err: err}
+
+					continue
+				}
+
+				cf, n, splitErr := d.splitFilterForDomainHash(
+					workerCtx,
+					b,
+					dataDir,
+					blockFilters[i],
+				)
+				results[i] = result{cf: cf, n: n, err: splitErr}
+				if splitErr != nil {
+					cancel()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	complexFilters = make([]Filter, 0, len(blockFilters))
+	var errs []error
+	for i, r := range results {
+		if r.err != nil {
+			errs = append(errs, fmt.Errorf("filter %d: %w", blockFilters[i].ID, r.err))
+			continue
+		}
+		diverted += r.n
+		if r.cf != nil {
+			complexFilters = append(complexFilters, *r.cf)
+		}
+	}
+	if len(errs) > 0 {
+		return nil, 0, errors.Join(errs...)
+	}
+
+	return complexFilters, diverted, nil
 }
 
 // splitFilterForDomainHash writes simple blocking rules from f into b and the
@@ -140,30 +222,42 @@ func (d *DNSFilter) splitFilterForDomainHash(
 
 	var complexLines int
 	for {
-		line, readErr := br.ReadString('\n')
-		if len(line) > 0 {
-			trimmed := strings.TrimRight(line, "\r\n")
-			domains, ok := domainhash.ParseLine(trimmed)
-			if ok {
-				for _, domain := range domains {
-					if addErr := b.AddDomain(domain); addErr != nil {
-						return nil, n, fmt.Errorf(
-							"adding domain from filter %d: %w",
-							f.ID,
-							addErr,
-						)
-					}
-				}
+		if err = ctx.Err(); err != nil {
+			return nil, n, err
+		}
+
+		line, readErr := br.ReadSlice('\n')
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			// Fall back to allocating for oversize lines.
+			rest, restErr := br.ReadString('\n')
+			lineStr := string(line) + rest
+			readErr = restErr
+			trimmed := strings.TrimRight(lineStr, "\r\n")
+			added, keep, lineErr := d.consumeFilterLine(b, f.ID, trimmed, lineStr, bw)
+			if lineErr != nil {
+				return nil, n, lineErr
+			}
+			if added {
 				n++
-			} else if keepComplexLine(trimmed) {
-				if _, writeErr := bw.WriteString(line); writeErr != nil {
-					return nil, n, fmt.Errorf("writing complex filter: %w", writeErr)
-				}
+			}
+			if keep {
+				complexLines++
+			}
+		} else if len(line) > 0 {
+			trimmed := string(bytes.TrimRight(line, "\r\n"))
+			added, keep, lineErr := d.consumeFilterLine(b, f.ID, trimmed, string(line), bw)
+			if lineErr != nil {
+				return nil, n, lineErr
+			}
+			if added {
+				n++
+			}
+			if keep {
 				complexLines++
 			}
 		}
 
-		if readErr == io.EOF {
+		if errors.Is(readErr, io.EOF) {
 			break
 		}
 		if readErr != nil {
@@ -183,6 +277,42 @@ func (d *DNSFilter) splitFilterForDomainHash(
 	}
 
 	return &Filter{ID: f.ID, FilePath: complexPath}, n, nil
+}
+
+// consumeFilterLine diverts a simple blocking line into b or writes a complex
+// leftover.  added is true when the line was a simple blocking rule; keep is
+// true when the original line was written to the complex leftover writer.
+func (d *DNSFilter) consumeFilterLine(
+	b *domainhash.Builder,
+	filterID rules.ListID,
+	trimmed string,
+	rawLine string,
+	bw *bufio.Writer,
+) (added, keep bool, err error) {
+	n, ok, addErr := b.AddBlockingLine(trimmed)
+	if addErr != nil {
+		return false, false, fmt.Errorf("adding domain from filter %d: %w", filterID, addErr)
+	}
+	if ok {
+		_ = n
+
+		return true, false, nil
+	}
+
+	if !keepComplexLine(trimmed) {
+		return false, false, nil
+	}
+
+	if _, err = bw.WriteString(rawLine); err != nil {
+		return false, false, fmt.Errorf("writing complex filter: %w", err)
+	}
+	if !strings.HasSuffix(rawLine, "\n") && !strings.HasSuffix(rawLine, "\r\n") {
+		if err = bw.WriteByte('\n'); err != nil {
+			return false, false, fmt.Errorf("writing complex filter newline: %w", err)
+		}
+	}
+
+	return false, true, nil
 }
 
 // openFilterReader returns a reader over the filter contents.  closer must be
@@ -243,6 +373,7 @@ func (d *DNSFilter) closeDomainHashIndex(ctx context.Context) {
 	}
 
 	d.domainHashIndex = nil
+	d.domainHashOnlyBlocks = false
 }
 
 // logDomainHashDisabled emits a debug line when the feature is off.
@@ -272,7 +403,7 @@ func (d *DNSFilter) matchDomainHashHost(
 
 	return Result{
 		Rules: []*ResultRule{{
-			Text: "domainhash:" + host,
+			Text: domainHashHitRule,
 		}},
 		Reason:     FilteredBlockList,
 		IsFiltered: true,

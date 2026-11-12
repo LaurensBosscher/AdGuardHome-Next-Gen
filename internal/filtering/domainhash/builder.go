@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/AdguardTeam/golibs/errors"
 )
@@ -20,27 +21,14 @@ const (
 	// [DomainHashConfig.DataDir].
 	FileName = "blocklist.bin"
 
-	// hashRecordSize is the size of the hash prefix of an intermediate run
-	// record.
+	// hashRecordSize is the size of a single intermediate run record: the
+	// little-endian full FNV-1a-64 hash.  Domain names are not stored in runs;
+	// truncated-hash collisions are detected from distinct full hashes.
 	hashRecordSize = MaxHashBytes
 
-	// recordLenSize is the size of the length prefix of an intermediate run
-	// record.
-	recordLenSize = 2
-
-	// runRecordHeader is the size of the header of an intermediate run
-	// record: the hash prefix and the length of the domain name.
-	runRecordHeader = hashRecordSize + recordLenSize
-
-	// recordOverhead is the number of bytes a single domain adds to the
-	// in-memory batch and to a run file, on top of the domain name itself.
-	recordOverhead = runRecordHeader
-
-	// Intermediate run records cannot be separated with a byte marker,
-	// because the hash prefix is binary and may contain any byte value.
-	// Instead, every record is a fixed-size header holding the hash prefix
-	// and the little-endian length of the domain name, followed by the
-	// domain name itself.
+	// recordOverhead is the number of bytes a single domain contributes to the
+	// in-memory batch and to a run file.
+	recordOverhead = hashRecordSize
 
 	// runBufferSize is the size of the buffered I/O used for intermediate run
 	// files.
@@ -123,28 +111,20 @@ type Stats struct {
 	PeakBatchBytes int64
 }
 
-// Collision is a pair of distinct domain names that map to the same truncated
-// hash.
+// Collision is a truncated-hash collision found while merging runs.  Distinct
+// full 64-bit hashes that share a truncated prefix count as a collision; the
+// domain names themselves are not retained in the builder.
 type Collision struct {
-	// Hash is the truncated hash shared by the domains.
+	// Hash is the truncated hash shared by the colliding full hashes.
 	Hash uint64
-
-	// Domains are the colliding domain names.
-	Domains [2]string
-}
-
-// batchEntry is a domain name and its hash buffered in memory until the batch
-// is flushed into a run file.
-type batchEntry struct {
-	// domain is the normalized domain name.
-	domain string
-
-	// hash is the FNV-1a-64 hash of domain, before truncation.
-	hash uint64
 }
 
 // Builder builds a blocklist file from a stream of domain names and rules.
+// Public methods are safe for concurrent use by multiple goroutines.
 type Builder struct {
+	// mu protects the mutable builder state below.
+	mu sync.Mutex
+
 	// cfg is the normalized configuration.
 	cfg DomainHashConfig
 
@@ -154,11 +134,11 @@ type Builder struct {
 	// runFiles are the paths of the intermediate run files.
 	runFiles []string
 
-	// batch is the domain names buffered in memory, in the order they are to
-	// be written.
-	batch []batchEntry
+	// batch is the full FNV-1a-64 hashes buffered in memory until flushed into
+	// a run file.  Capacity is reserved up to the memory budget.
+	batch []uint64
 
-	// batchBytes is the current size of the batch.
+	// batchBytes is the current size of the batch in bytes (8 × len(batch)).
 	batchBytes int64
 
 	// collisions are the samples of the hash collisions found by the last
@@ -193,7 +173,16 @@ func NewBuilder(cfg DomainHashConfig) (b *Builder, err error) {
 		return nil, fmt.Errorf("creating run directory: %w", err)
 	}
 
-	return &Builder{cfg: cfg, dir: dir}, nil
+	capHint := int(cfg.batchBytes() / hashRecordSize)
+	if capHint < 1 {
+		capHint = 1
+	}
+
+	return &Builder{
+		cfg:   cfg,
+		dir:   dir,
+		batch: make([]uint64, 0, capHint),
+	}, nil
 }
 
 // Path returns the path to the blocklist file the builder writes to.
@@ -224,25 +213,113 @@ func (b *Builder) AddDomains(domains []string) (err error) {
 // It returns the number of domains added.  Lines without a supported blocking
 // rule are counted in [Stats.Skipped].
 func (b *Builder) AddLine(line string) (n int, err error) {
-	domains, ok := ParseLine(line)
-	if !ok {
-		b.stats.Skipped++
-
-		return 0, nil
+	n, ok, err := b.AddBlockingLine(line)
+	if err != nil {
+		return n, err
 	}
-
-	for _, d := range domains {
-		var added bool
-		if added, err = b.addDomain(d); err != nil {
-			return n, err
+	if !ok {
+		b.mu.Lock()
+		if !b.closed {
+			b.stats.Skipped++
 		}
-
-		if added {
-			n++
-		}
+		b.mu.Unlock()
 	}
 
 	return n, nil
+}
+
+// AddBlockingLine parses line and appends every simple blocking domain hash.
+// ok is false when line is not a supported hosts / ||domain^ rule; Skipped is
+// not modified in that case so callers can treat the line as complex.
+// Valid domains are normalized once.
+func (b *Builder) AddBlockingLine(line string) (n int, ok bool, err error) {
+	var (
+		hashes  [8]uint64
+		invalid int
+	)
+
+	hs := hashes[:0]
+	ok, invalid, hs = collectBlockingHashes(line, hs)
+	if !ok {
+		return 0, false, nil
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.closed {
+		return 0, true, ErrBuilderClosed
+	}
+
+	b.stats.Skipped += invalid
+	for _, h := range hs {
+		if err = b.appendHashLocked(h); err != nil {
+			return n, true, err
+		}
+		n++
+	}
+
+	return n, true, nil
+}
+
+// collectBlockingHashes extracts full FNV-1a-64 hashes of the simple blocking
+// domains in line.  ok is false when line is not a supported blocking rule.
+// invalid counts host tokens that failed normalization.
+func collectBlockingHashes(line string, dst []uint64) (ok bool, invalid int, hashes []uint64) {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "\uFEFF")
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false, 0, dst
+	}
+
+	switch line[0] {
+	case '#', '!', '[':
+		return false, 0, dst
+	}
+
+	if strings.HasPrefix(line, "@@") {
+		return false, 0, dst
+	}
+
+	var buf [maxDomainLen]byte
+
+	if rest, isAdblock := strings.CutPrefix(line, "||"); isAdblock {
+		domain, isRule := parseAdblockDomain(rest)
+		if !isRule {
+			return false, 0, dst
+		}
+		norm, isValid := normalizeTo(buf[:], domain)
+		if !isValid {
+			return false, 0, dst
+		}
+
+		return true, 0, append(dst, sum(norm))
+	}
+
+	fields := strings.Fields(line)
+	if len(fields) < 2 || !isBlockingAddr(fields[0]) {
+		return false, 0, dst
+	}
+
+	start := len(dst)
+	for _, f := range fields[1:] {
+		if strings.HasPrefix(f, "#") {
+			break
+		}
+		norm, isValid := normalizeTo(buf[:], f)
+		if !isValid {
+			invalid++
+			continue
+		}
+		dst = append(dst, sum(norm))
+	}
+
+	if len(dst) == start && invalid == 0 {
+		return false, 0, dst
+	}
+
+	return true, invalid, dst
 }
 
 // ParseLine extracts the domain names from a single line of a blocklist in
@@ -314,26 +391,38 @@ func parseHostsLine(line string) (domains []string, ok bool) {
 // is a domain name optionally followed by the "^" separator.  ok is false if
 // rest is not such a rule.
 func parseAdblockRule(rest string) (domains []string, ok bool) {
-	if strings.ContainsAny(rest, "$/|*#") {
+	domain, ok := parseAdblockDomain(rest)
+	if !ok {
 		return nil, false
 	}
 
-	if i := strings.IndexByte(rest, '^'); i >= 0 {
-		if i != len(rest)-1 {
-			return nil, false
-		}
-
-		rest = rest[:i]
-	}
-
 	var buf [maxDomainLen]byte
-
-	norm, ok := normalizeTo(buf[:], rest)
+	norm, ok := normalizeTo(buf[:], domain)
 	if !ok {
 		return nil, false
 	}
 
 	return []string{string(norm)}, true
+}
+
+// parseAdblockDomain returns the domain part of a plain ||domain[^] rule.
+func parseAdblockDomain(rest string) (domain string, ok bool) {
+	if strings.ContainsAny(rest, "$/|*#") {
+		return "", false
+	}
+
+	if i := strings.IndexByte(rest, '^'); i >= 0 {
+		if i != len(rest)-1 {
+			return "", false
+		}
+		rest = rest[:i]
+	}
+
+	if rest == "" {
+		return "", false
+	}
+
+	return rest, true
 }
 
 // isBlockingAddr reports whether s is an address that hosts files use to block
@@ -350,21 +439,44 @@ func isBlockingAddr(s string) (ok bool) {
 // addDomain adds domain to the batch, flushing the batch if it has grown to
 // the configured memory budget.  added is false if domain is invalid.
 func (b *Builder) addDomain(domain string) (added bool, err error) {
-	if b.closed {
-		return false, ErrBuilderClosed
-	}
-
 	var buf [maxDomainLen]byte
 
 	norm, ok := normalizeTo(buf[:], domain)
 	if !ok {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if b.closed {
+			return false, ErrBuilderClosed
+		}
 		b.stats.Skipped++
 
 		return false, nil
 	}
 
-	b.batch = append(b.batch, batchEntry{hash: sum(norm), domain: string(norm)})
-	b.batchBytes += int64(len(norm) + recordOverhead)
+	return b.addNormalized(norm)
+}
+
+// addNormalized appends the hash of an already-normalized domain to the batch.
+func (b *Builder) addNormalized(norm []byte) (added bool, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.closed {
+		return false, ErrBuilderClosed
+	}
+
+	if err = b.appendHashLocked(sum(norm)); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+// appendHashLocked appends a full hash to the batch and flushes when the budget
+// is reached.  b.mu must be held.
+func (b *Builder) appendHashLocked(h uint64) (err error) {
+	b.batch = append(b.batch, h)
+	b.batchBytes += recordOverhead
 	if b.batchBytes > b.stats.PeakBatchBytes {
 		b.stats.PeakBatchBytes = b.batchBytes
 	}
@@ -372,17 +484,23 @@ func (b *Builder) addDomain(domain string) (added bool, err error) {
 	b.stats.Domains++
 
 	if b.batchBytes >= b.cfg.batchBytes() {
-		if err = b.FlushBatch(); err != nil {
-			return true, err
-		}
+		return b.flushBatchLocked()
 	}
 
-	return true, nil
+	return nil
 }
 
 // FlushBatch sorts the batch and writes it into a new intermediate run file.
 // It is a no-op if the batch is empty.
 func (b *Builder) FlushBatch() (err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.flushBatchLocked()
+}
+
+// flushBatchLocked implements [Builder.FlushBatch].  b.mu must be held.
+func (b *Builder) flushBatchLocked() (err error) {
 	if b.closed {
 		return ErrBuilderClosed
 	}
@@ -391,7 +509,21 @@ func (b *Builder) FlushBatch() (err error) {
 		return nil
 	}
 
-	slices.SortFunc(b.batch, b.compareBatchEntries)
+	mask := truncMask(b.cfg.HashBytes)
+	slices.SortFunc(b.batch, func(a, c uint64) (res int) {
+		switch at, ct := a&mask, c&mask; {
+		case at < ct:
+			return -1
+		case at > ct:
+			return 1
+		case a < c:
+			return -1
+		case a > c:
+			return 1
+		default:
+			return 0
+		}
+	})
 
 	path := filepath.Join(b.dir, fmt.Sprintf("run-%06d", len(b.runFiles)))
 	if err = writeRun(path, b.batch); err != nil {
@@ -399,36 +531,15 @@ func (b *Builder) FlushBatch() (err error) {
 	}
 
 	b.runFiles = append(b.runFiles, path)
-	b.batch = nil
+	b.batch = b.batch[:0]
 	b.batchBytes = 0
 	b.stats.Runs = len(b.runFiles)
 
 	return nil
 }
 
-// compareBatchEntries orders batch entries by their truncated hash, and then
-// by their full hash and domain name, which is the order the merge relies on.
-func (b *Builder) compareBatchEntries(a, c batchEntry) (res int) {
-	mask := truncMask(b.cfg.HashBytes)
-	switch at, ct := a.hash&mask, c.hash&mask; {
-	case at < ct:
-		return -1
-	case at > ct:
-		return 1
-	}
-
-	switch {
-	case a.hash < c.hash:
-		return -1
-	case a.hash > c.hash:
-		return 1
-	default:
-		return strings.Compare(a.domain, c.domain)
-	}
-}
-
 // writeRun writes the sorted batch into a new run file at path.
-func writeRun(path string, batch []batchEntry) (err error) {
+func writeRun(path string, batch []uint64) (err error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("creating run file %q: %w", path, err)
@@ -452,24 +563,13 @@ func writeRun(path string, batch []batchEntry) (err error) {
 }
 
 // writeRunRecords writes the batch to f as intermediate run records.
-func writeRunRecords(f *os.File, batch []batchEntry) (err error) {
+func writeRunRecords(f *os.File, batch []uint64) (err error) {
 	w := bufio.NewWriterSize(f, runBufferSize)
 
 	var h [hashRecordSize]byte
-	for i := range batch {
-		e := &batch[i]
-		binary.LittleEndian.PutUint64(h[:], e.hash)
-
+	for _, hash := range batch {
+		binary.LittleEndian.PutUint64(h[:], hash)
 		if _, err = w.Write(h[:]); err != nil {
-			return fmt.Errorf("writing run record: %w", err)
-		}
-
-		binary.LittleEndian.PutUint16(h[:recordLenSize], uint16(len(e.domain)))
-		if _, err = w.Write(h[:recordLenSize]); err != nil {
-			return fmt.Errorf("writing run record: %w", err)
-		}
-
-		if _, err = w.WriteString(e.domain); err != nil {
 			return fmt.Errorf("writing run record: %w", err)
 		}
 	}
@@ -483,13 +583,16 @@ func writeRunRecords(f *os.File, batch []batchEntry) (err error) {
 
 // MergeRuns merges the intermediate run files into the blocklist file in a
 // single pass and renames it over the previous one.  It flushes the remaining
-// batch first.
+// batch first.  It must not run concurrently with Add* methods.
 func (b *Builder) MergeRuns() (err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.closed {
 		return ErrBuilderClosed
 	}
 
-	if err = b.FlushBatch(); err != nil {
+	if err = b.flushBatchLocked(); err != nil {
 		return err
 	}
 
@@ -576,12 +679,11 @@ func (b *Builder) mergeInto(dst *os.File) (hashes, collisions int, err error) {
 	b.collisions = nil
 
 	var (
-		havePrev   bool
-		prevTrunc  uint64
-		prevHash   uint64
-		prevDomain string
-		buf        [MaxHashBytes]byte
-		hb         = b.cfg.HashBytes
+		havePrev  bool
+		prevTrunc uint64
+		prevHash  uint64
+		buf       [MaxHashBytes]byte
+		hb        = b.cfg.HashBytes
 	)
 
 	for all.Len() > 0 {
@@ -595,13 +697,14 @@ func (b *Builder) mergeInto(dst *os.File) (hashes, collisions int, err error) {
 
 			hashes++
 			havePrev = true
-			prevTrunc, prevHash, prevDomain = c.trunc, c.hash, c.domain
-		case c.hash != prevHash || c.domain != prevDomain:
+			prevTrunc, prevHash = c.trunc, c.hash
+		case c.hash != prevHash:
+			// Distinct full hashes that share a truncated prefix are
+			// collisions.  Identical full hashes are duplicates of the same
+			// domain (or a 2^-64 birthday collision) and are ignored.
 			collisions++
-			b.collisions = appendCollision(b.collisions, Collision{
-				Hash:    c.trunc,
-				Domains: [2]string{prevDomain, c.domain},
-			})
+			b.collisions = appendCollision(b.collisions, Collision{Hash: c.trunc})
+			prevHash = c.hash
 		}
 
 		var ok bool
@@ -641,6 +744,9 @@ func (b *Builder) Build() (stats Stats, err error) {
 
 // Close removes the intermediate files.  It is safe to call it more than once.
 func (b *Builder) Close() (err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.closed {
 		return nil
 	}
@@ -666,6 +772,9 @@ func (b *Builder) Close() (err error) {
 // CollisionSamples returns up to maxCollisionSamples of the collisions found by
 // the last merge.
 func (b *Builder) CollisionSamples() (cs []Collision) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	return slices.Clone(b.collisions)
 }
 
@@ -688,9 +797,6 @@ type runCursor struct {
 
 	// mask is the mask of the truncated hash.
 	mask uint64
-
-	// domain is the domain name of the current record.
-	domain string
 
 	// hash is the full hash of the current record.
 	hash uint64
@@ -715,27 +821,16 @@ func openRunCursor(path string, hashBytes int) (c *runCursor, err error) {
 
 // next reads the next record of c.  ok is false if the run file is exhausted.
 func (c *runCursor) next() (ok bool, err error) {
-	var hdr [runRecordHeader]byte
+	var hdr [hashRecordSize]byte
 	if _, err = io.ReadFull(c.r, hdr[:]); err != nil {
 		if errors.Is(err, io.EOF) {
 			return false, nil
 		}
 
-		return false, fmt.Errorf("%w: reading the header: %w", errBadRunFile, err)
+		return false, fmt.Errorf("%w: reading the hash: %w", errBadRunFile, err)
 	}
 
-	size := int(binary.LittleEndian.Uint16(hdr[hashRecordSize:]))
-	if size == 0 || size > maxDomainLen {
-		return false, fmt.Errorf("%w: bad domain length %d", errBadRunFile, size)
-	}
-
-	var d [maxDomainLen]byte
-	if _, err = io.ReadFull(c.r, d[:size]); err != nil {
-		return false, fmt.Errorf("%w: reading the domain: %w", errBadRunFile, err)
-	}
-
-	c.hash = binary.LittleEndian.Uint64(hdr[:hashRecordSize])
-	c.domain = string(d[:size])
+	c.hash = binary.LittleEndian.Uint64(hdr[:])
 	c.trunc = c.hash & c.mask
 
 	return true, nil
@@ -753,8 +848,8 @@ func (c *runCursor) close() (err error) {
 	return f.Close()
 }
 
-// runHeap is a min-heap of run cursors ordered by truncated hash, full hash,
-// and domain name.
+// runHeap is a min-heap of run cursors ordered by truncated hash, then full
+// hash.
 type runHeap []*runCursor
 
 // type check
@@ -771,10 +866,8 @@ func (h runHeap) Less(i, j int) (less bool) {
 	switch {
 	case a.trunc != b.trunc:
 		return a.trunc < b.trunc
-	case a.hash != b.hash:
-		return a.hash < b.hash
 	default:
-		return a.domain < b.domain
+		return a.hash < b.hash
 	}
 }
 

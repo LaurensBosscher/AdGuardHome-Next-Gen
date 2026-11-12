@@ -56,7 +56,7 @@ func TestBuilderDefaultConfig(t *testing.T) {
 	assert.Equal(t, DefaultMemBudgetBytes, b.cfg.MemBudgetBytes, "memory budget")
 
 	requireNoError(t, b.AddDomain("example.com"))
-	assert.Equal(t, int64(len("example.com")+recordOverhead), b.batchBytes, "batch bytes")
+	assert.Equal(t, int64(recordOverhead), b.batchBytes, "batch bytes")
 	assert.Equal(t, b.batchBytes, b.stats.PeakBatchBytes, "peak batch bytes")
 }
 

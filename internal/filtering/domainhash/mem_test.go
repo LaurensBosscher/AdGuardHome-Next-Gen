@@ -1,6 +1,7 @@
 package domainhash
 
 import (
+	"runtime/debug"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -76,4 +77,26 @@ func TestDetectMemBudget(t *testing.T) {
 	}
 
 	require.GreaterOrEqual(t, DetectMemBudget(-1), MinMemBudgetBytes, "negative margin")
+}
+
+func TestResolveMemBudgetAbsoluteCap(t *testing.T) {
+	const capBytes int64 = 12 << 20
+
+	got := ResolveMemBudget(0, capBytes)
+	require.GreaterOrEqual(t, got, MinMemBudgetBytes, "floor")
+	assert.LessOrEqual(t, got, capBytes, "absolute cap")
+
+	// A tiny absolute cap still floors at MinMemBudgetBytes.
+	got = ResolveMemBudget(0, 1<<20)
+	assert.Equal(t, MinMemBudgetBytes, got, "tiny absolute cap floors")
+}
+
+func TestResolveMemBudgetGoMemLimit(t *testing.T) {
+	prev := debug.SetMemoryLimit(64 << 20)
+	t.Cleanup(func() { debug.SetMemoryLimit(prev) })
+
+	got := ResolveMemBudget(0, 0)
+	require.GreaterOrEqual(t, got, MinMemBudgetBytes, "floor")
+	// 64 MiB limit − 32 MiB reserve = 32 MiB headroom.
+	assert.LessOrEqual(t, got, int64(32<<20), "gomemlimit headroom")
 }

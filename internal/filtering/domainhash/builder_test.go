@@ -278,8 +278,8 @@ func TestBuilderExternalSort(t *testing.T) {
 	assert.False(t, idx.ContainsDomain("host02500.example.net"), "host02500.example.net")
 }
 
-// TestBuilderCollisions checks that the builder reports distinct domains that
-// share a truncated hash.
+// TestBuilderCollisions checks that the builder reports distinct full hashes
+// that share a truncated prefix, and that every input domain still matches.
 func TestBuilderCollisions(t *testing.T) {
 	const (
 		hashBytes   = domainhash.MinHashBytes
@@ -296,8 +296,11 @@ func TestBuilderCollisions(t *testing.T) {
 	b, err := domainhash.NewBuilder(cfg)
 	require.NoError(t, err, "new")
 
+	domains := make([]string, 0, numDomains)
 	for i := range numDomains {
-		require.NoError(t, b.AddDomain(fmt.Sprintf("host%05d.test.example", i)), "add")
+		d := fmt.Sprintf("host%05d.test.example", i)
+		domains = append(domains, d)
+		require.NoError(t, b.AddDomain(d), "add")
 	}
 
 	stats, err := b.Build()
@@ -306,25 +309,14 @@ func TestBuilderCollisions(t *testing.T) {
 	require.Equal(t, numDomains, stats.Domains, "domains")
 	require.Greater(t, stats.Collisions, 0, "collisions")
 
-	// Every domain either becomes a hash of its own or collides with an
-	// already written one.
+	// Every accepted domain either becomes a truncated hash of its own or
+	// collides with an already written one.
 	require.Equal(t, numDomains, stats.Hashes+stats.Collisions, "hashes+collisions")
 
 	samples := b.CollisionSamples()
 	require.NotEmpty(t, samples, "samples")
 	require.LessOrEqual(t, len(samples), 16, "samples")
 
-	for _, c := range samples {
-		for _, d := range c.Domains {
-			h, ok := domainhash.HashDomain(d, hashBytes)
-			require.True(t, ok, "normalize %q", d)
-			require.Equal(t, h, c.Hash, "hash of %q", d)
-		}
-
-		require.NotEqual(t, c.Domains[0], c.Domains[1], "domains")
-	}
-
-	// Colliding domains still match, since only the hash is stored.
 	idx, err := domainhash.Open(b.Path(), hashBytes)
 	require.NoError(t, err, "open")
 	defer func() {
@@ -334,8 +326,12 @@ func TestBuilderCollisions(t *testing.T) {
 	require.Equal(t, stats.Hashes, idx.Len(), "len")
 
 	for _, c := range samples {
-		require.True(t, idx.ContainsDomain(c.Domains[0]), "%s", c.Domains[0])
-		require.True(t, idx.ContainsDomain(c.Domains[1]), "%s", c.Domains[1])
+		require.True(t, idx.ContainsHash(c.Hash), "sample hash %#x", c.Hash)
+	}
+
+	// Truncated storage still matches every input domain (including colliders).
+	for _, d := range domains {
+		require.True(t, idx.ContainsDomain(d), "%s", d)
 	}
 }
 
@@ -354,9 +350,8 @@ func TestBuilder100k(t *testing.T) {
 		numDomains  = 100_000
 		budgetBytes = 256 << 10
 
-		// A single record is at most the hash, the longest domain, and the
-		// record separator.
-		maxRecordBytes = int64(8 + len("host099999.example49.com") + 1)
+		// A single in-memory / run record is exactly one full 64-bit hash.
+		maxRecordBytes = int64(8)
 
 		// The whole process must stay far below a fully in-memory build of the
 		// domain names plus their hashes would need on top of the baseline.
@@ -556,4 +551,45 @@ func readHashes(t *testing.T, path string, hashBytes int) (hashes []uint64) {
 	}
 
 	return hashes
+}
+
+func TestBuilderConcurrentAddBlockingLine(t *testing.T) {
+	const (
+		workers     = 4
+		perWorker   = 2000
+		budgetBytes = 8 << 10
+	)
+
+	b, err := domainhash.NewBuilder(domainhash.DomainHashConfig{
+		HashBytes:      domainhash.DefaultHashBytes,
+		DataDir:        t.TempDir(),
+		MemBudgetBytes: budgetBytes,
+	})
+	require.NoError(t, err, "new")
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := range workers {
+		go func(id int) {
+			defer wg.Done()
+			for i := range perWorker {
+				line := fmt.Sprintf("||w%02d-host%05d.example.com^", id, i)
+				_, ok, addErr := b.AddBlockingLine(line)
+				if addErr != nil {
+					t.Errorf("add: %v", addErr)
+					return
+				}
+				if !ok {
+					t.Errorf("expected blocking line %q", line)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	stats, err := b.Build()
+	require.NoError(t, err, "build")
+	require.Equal(t, workers*perWorker, stats.Domains, "domains")
+	require.Equal(t, workers*perWorker, stats.Hashes, "hashes")
 }

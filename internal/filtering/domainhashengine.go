@@ -151,8 +151,8 @@ func (d *DNSFilter) splitFiltersForDomainHash(
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
-				if err := workerCtx.Err(); err != nil {
-					results[i] = result{err: err}
+				if ctxErr := workerCtx.Err(); ctxErr != nil {
+					results[i] = result{err: ctxErr}
 
 					continue
 				}

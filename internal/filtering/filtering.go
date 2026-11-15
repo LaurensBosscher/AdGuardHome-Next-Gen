@@ -1020,8 +1020,8 @@ func (d *DNSFilter) matchHost(
 	// When every simple block was diverted and no complex leftovers remain,
 	// the hash index cannot be overridden by the block engine — check it
 	// before urlfilter.
-	if res, ok := d.matchDomainHashBeforeEngine(ctx, host, setts); ok {
-		return res, nil
+	if hashRes, ok := d.matchDomainHashBeforeEngine(ctx, host, setts); ok {
+		return hashRes, nil
 	}
 
 	engineRes, done := d.matchHostProcessFilteringEngine(ctx, host, rrtype, setts, ufReq)
@@ -1029,8 +1029,8 @@ func (d *DNSFilter) matchHost(
 		return engineRes, nil
 	}
 
-	if res, ok := d.matchDomainHashAfterEngine(ctx, host, setts); ok {
-		return res, nil
+	if hashRes, ok := d.matchDomainHashAfterEngine(ctx, host, setts); ok {
+		return hashRes, nil
 	}
 
 	return Result{}, nil

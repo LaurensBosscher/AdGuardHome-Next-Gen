@@ -2,15 +2,40 @@
 
 <!-- TODO(a.garipov): Reformat in accordance with the KeepAChangelog spec. -->
 
-## v0.107.80: API changes
+## v1.0.0: API changes (NOTE: Not released yet)
 
-### New `GET /control/cache_info` HTTP API
+- The following deprecated HTTP APIs:
+
+    - `GET /control/blocked_services/list`
+    - `GET /control/blocked_services/services`
+    - `GET /control/clients/find`
+    - `GET /control/i18n/current_language`
+    - `GET /control/querylog_info`
+    - `GET /control/stats_info`
+    - `POST /control/blocked_services/set`
+    - `POST /control/i18n/change_language`
+    - `POST /control/querylog_config`
+    - `POST /control/safesearch/disable`
+    - `POST /control/safesearch/enable`
+    - `POST /control/stats_config`
+
+- The following deprecated properties and query parameters in HTTP APIs have been removed:
+
+    - Properties `"filterId"` and `"rule"` in the response of the `GET /control/querylog` HTTP API.
+
+    - Properties `"filter_id"` and `"rule"` in the response of the `GET /control/filtering/check_host` HTTP API.
+
+    - Property `"safesearch_enabled"` in the client APIs.
+
+    - Query parameter `response_status` in the `GET /control/querylog` HTTP API.
+
+- The deprecated usage of an empty value for the `"upstream_mode"` property in the `GET /control/dns_info` and `POST /control/dns_config` HTTP APIs has been removed.  Use `"load_balance"` instead.
+
+### Next-Gen: cache stats APIs
 
 - The new `GET /control/cache_info` HTTP API returns the number of entries in the DNS cache and the size of the data stored in it.
 
-### New `num_cache_hits` and `num_cache_misses` fields in `GET /control/stats`
-
-- New fields `num_cache_hits` and `num_cache_misses` contain the number of requests answered from the DNS cache and the number of requests sent to the upstream servers respectively.
+- New fields `num_cache_hits` and `num_cache_misses` in `GET /control/stats` contain the number of requests answered from the DNS cache and the number of requests sent to the upstream servers respectively.
 
 ## v0.107.79: API changes
 

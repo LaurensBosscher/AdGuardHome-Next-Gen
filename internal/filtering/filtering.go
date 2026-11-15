@@ -101,7 +101,8 @@ type Config struct {
 	BlockedServices *BlockedServices `yaml:"blocked_services"`
 
 	// EtcHosts is a container of IP-hostname pairs taken from the operating
-	// system configuration files (e.g. /etc/hosts).
+	// system configuration files (e.g. /etc/hosts).  If nil, no matching for
+	// hostnames from hosts files is performed, e.g. in rDNS and rewrites.
 	//
 	// TODO(e.burkov):  Move it to dnsforward entirely.
 	EtcHosts hostsfile.Storage `yaml:"-"`
@@ -1019,11 +1020,8 @@ func (d *DNSFilter) matchHost(
 	// When every simple block was diverted and no complex leftovers remain,
 	// the hash index cannot be overridden by the block engine — check it
 	// before urlfilter.
-	if d.domainHashOnlyBlocks {
-		hashRes, ok := d.matchDomainHashHost(ctx, host, setts)
-		if ok {
-			return hashRes, nil
-		}
+	if res, ok := d.matchDomainHashBeforeEngine(ctx, host, setts); ok {
+		return res, nil
 	}
 
 	engineRes, done := d.matchHostProcessFilteringEngine(ctx, host, rrtype, setts, ufReq)
@@ -1031,11 +1029,8 @@ func (d *DNSFilter) matchHost(
 		return engineRes, nil
 	}
 
-	if !d.domainHashOnlyBlocks {
-		hashRes, ok := d.matchDomainHashHost(ctx, host, setts)
-		if ok {
-			return hashRes, nil
-		}
+	if res, ok := d.matchDomainHashAfterEngine(ctx, host, setts); ok {
+		return res, nil
 	}
 
 	return Result{}, nil

@@ -410,6 +410,34 @@ func (d *DNSFilter) matchDomainHashHost(
 	}, true
 }
 
+// matchDomainHashBeforeEngine checks the hash index before urlfilter when every
+// simple block was diverted and no complex leftovers remain.
+func (d *DNSFilter) matchDomainHashBeforeEngine(
+	ctx context.Context,
+	host string,
+	setts *Settings,
+) (res Result, ok bool) {
+	if !d.domainHashOnlyBlocks {
+		return Result{}, false
+	}
+
+	return d.matchDomainHashHost(ctx, host, setts)
+}
+
+// matchDomainHashAfterEngine checks the hash index after urlfilter when complex
+// block rules may still override a hash hit.
+func (d *DNSFilter) matchDomainHashAfterEngine(
+	ctx context.Context,
+	host string,
+	setts *Settings,
+) (res Result, ok bool) {
+	if d.domainHashOnlyBlocks {
+		return Result{}, false
+	}
+
+	return d.matchDomainHashHost(ctx, host, setts)
+}
+
 // prepareDomainHashBlocks builds the domain-hash index when enabled and returns
 // the leftover complex block filters for urlfilter.  When disabled, it returns
 // the original filters unchanged.

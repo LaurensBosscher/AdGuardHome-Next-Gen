@@ -1,3 +1,7 @@
+<!-- TODO(a.garipov):  Update the image and add alt text. -->
+
+<!-- markdownlint-disable first-line-h1 no-alt-text no-inline-html -->
+
 &nbsp;
 <p align="center">
   <picture>
@@ -39,6 +43,8 @@
   <img src="https://cdn.adtidy.org/public/Adguard/Common/adguard_home.gif" width="800"/>
 </p>
 <hr/>
+
+<!-- markdownlint-enable first-line-h1 no-alt-text no-inline-html -->
 
 ## AdGuard Home Next-Gen
 
@@ -435,13 +441,19 @@ When you need to debug the frontend without recompiling the production version e
 AdGuard Home uses [Playwright](https://playwright.dev) for E2E testing. Tests are located in `tests/e2e`.
 
 **Running Tests:**
-- `npm run test:e2e` – run all tests (headless).
-- `npm run test:e2e:interactive` – run tests interactively.
-- `npm run test:e2e:debug` – run tests in debug mode.
-- `npm run test:e2e:codegen` – generate new test code.
+
+- `npm run test:e2e`: run all tests (headless).
+
+- `npm run test:e2e:interactive`: run tests interactively.
+
+- `npm run test:e2e:debug`: run tests in debug mode.
+
+- `npm run test:e2e:codegen`: generate new test code.
 
 **Setup:**
+
 1. Run `npm install` to install dependencies.
+
 2. Run `npx playwright install` to set up required browsers.
 
 > **Warning:** Playwright will download and install its own browser binaries for testing, which may differ from the browsers installed on your system.

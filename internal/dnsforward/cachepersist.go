@@ -193,10 +193,12 @@ func saveProxyDNSCacheCount(path string, p *proxy.Proxy) (n int, err error) {
 		return 0, fmt.Errorf("creating cache persist temp: %w", err)
 	}
 
+	// Windows refuses os.Rename while the source handle is still open, so close
+	// explicitly before the replace.  On any failure, drop the temp file.
+	closed := false
 	defer func() {
-		closeErr := f.Close()
-		if err == nil {
-			err = closeErr
+		if !closed {
+			_ = f.Close()
 		}
 		if err != nil {
 			_ = os.Remove(tmp)
@@ -232,6 +234,11 @@ func saveProxyDNSCacheCount(path string, p *proxy.Proxy) (n int, err error) {
 	if err = f.Sync(); err != nil {
 		return 0, err
 	}
+
+	if err = f.Close(); err != nil {
+		return 0, err
+	}
+	closed = true
 
 	if err = os.Rename(tmp, path); err != nil {
 		return 0, fmt.Errorf("renaming cache persist file: %w", err)
